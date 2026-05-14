@@ -1,0 +1,55 @@
+processor_resources:
+  - label: system_b_egress_mapping
+    mapping: |
+      # =========================================================================
+      # CONFIGURATION INJECTION POINT
+      # =========================================================================
+      # System B's real JSON ICD will replace this placeholder when their
+      # team confirms the envelope shape. THIS file (and the alternate
+      # system-b-egress-fmc.yaml) are the only artifacts to touch:
+      #   - Customer envelope structure → edit `root = {...}`
+      #   - Customer status vocabulary  → edit the `match` block
+      # No Python code changes, no service rebuild.
+      #
+      # Default vocabulary: OK / DEGRADED / CRITICAL / NON_OPERATIONAL
+      # (matches the internal LogisticsSeverity names directly). The
+      # `-fmc.yaml` sibling demonstrates a different vocabulary mapping
+      # for FMC/PMC/NMC-style customers.
+      # =========================================================================
+
+      let upd = this  # AssetLogisticsStatusUpdate (JSON-decoded from proto)
+
+      # Status scheme mapping. Swap the `match` arms to change customer
+      # vocabulary — Bloblang only, no code.
+      let customer_status = match $upd.status.overallSeverity {
+        "LOGISTICS_SEVERITY_OK"               => "OK"
+        "LOGISTICS_SEVERITY_DEGRADED"         => "DEGRADED"
+        "LOGISTICS_SEVERITY_CRITICAL"         => "CRITICAL"
+        "LOGISTICS_SEVERITY_NON_OPERATIONAL"  => "NON_OPERATIONAL"
+        _                                     => "UNKNOWN"
+      }
+
+      # Customer JSON envelope — placeholder, real shape sideloads when
+      # System B's ICD is final. All field names are editable here.
+      root = {
+        "schema_version": "1.0",
+        "message_type":   "asset_subsystem_status",
+        "asset_id":       $upd.status.assetId.or(""),
+        "platform":       $upd.status.platformVariant.or(""),
+        "status":         $customer_status,
+        "is_transition":  $upd.isTransition.or(false),
+        "is_initial":     $upd.isInitial.or(false),
+        "revision":       $upd.status.statusRevision.or(0),
+        "computed_at":    $upd.status.computedAt.or(""),
+        "factors": $upd.status.constrainingFactors.or([]).map_each(f -> {
+          "factor":           f.factorId.or(""),
+          "severity":         f.severity.or("LOGISTICS_SEVERITY_UNSPECIFIED"),
+          "description":      f.description.or(""),
+          "current_value":    f.currentValue.or({}),
+          "threshold":        f.threshold.or({})
+        })
+      }
+
+      # Set the AMQP routing key for the topic exchange so subscribers can
+      # filter per-asset.
+      meta amqp_routing_key = "asset." + $upd.status.assetId.or("unknown") + ".status"

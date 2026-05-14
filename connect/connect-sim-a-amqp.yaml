@@ -1,0 +1,54 @@
+# =============================================================================
+# Redpanda Connect — System A AMQP ingress (Phase 3.5)
+# =============================================================================
+# Tiny pipeline: AMQP → Kafka raw passthrough.
+#
+# This replaces the previous sim_a_ingestor.py Python sidecar. Per the
+# Phase 3.5 architectural principle "Connect at the protocol boundary;
+# Bloblang at the shape boundary", AMQP→Kafka transport is exactly what
+# Redpanda Connect was built for — no Python is required.
+#
+# The downstream Bloblang translation (sim-a-mapping.yaml) runs in the
+# main `redpanda-connect` container against `ingress-sim-a-raw`, exactly
+# as it did when the sidecar fronted that topic.
+# =============================================================================
+logger:
+  level: INFO
+  format: logfmt
+  add_timestamp: true
+
+http:
+  enabled: true
+  address: 0.0.0.0:4196
+
+input:
+  amqp_0_9:
+    urls:
+      - "amqp://openddil:openddil@rabbitmq:5672/"
+    queue: openddil.sim-a.ingress
+    consumer_tag: openddil-connect-sim-a
+    prefetch_count: 64
+
+pipeline:
+  threads: 2
+  processors:
+    # Extract the partition key from the native JSON. The customer's
+    # identity field is configurable via SIM_A_KEY_FIELD env var; default
+    # is `vehicle_id`. If the field is missing or the body isn't JSON, fall
+    # back to a deterministic random UUID — the message still flows.
+    - mapping: |
+        let key_field = env("SIM_A_KEY_FIELD").or("vehicle_id")
+        let parsed = if content().type() == "bytes" || content().type() == "string" {
+          content().parse_json().catch({})
+        } else {
+          {}
+        }
+        meta kafka_key = $parsed.get($key_field).or(uuid_v4()).string()
+
+output:
+  kafka_franz:
+    seed_brokers: [ "redpanda-edge:9092" ]
+    topic: "ingress-sim-a-raw"
+    key: '${! meta("kafka_key") }'
+    compression: zstd
+    max_in_flight: 64

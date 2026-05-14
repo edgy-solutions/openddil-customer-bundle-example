@@ -1,0 +1,58 @@
+name: Compose Validate
+
+# Syntactic smoke test for the customer overlay. Runs `docker compose config
+# --quiet` against the two canonical layering modes that this repo controls:
+#
+#   1. This overlay alone (every relative path inside the file resolves)
+#   2. OSS base + this overlay (the supported public composition)
+#
+# The OSS+example+private and OSS+private modes are NOT validated here —
+# private bundles live in private repos and are not visible to this CI.
+# Those modes are exercised by the private bundle's own CI.
+#
+# This is a CHEAP check (parses YAML, resolves paths, validates variable
+# interpolation). It does NOT pull images or bring containers up. Full
+# end-to-end validation is `tests/integration/run_all.py`, which runs
+# locally against a live Docker daemon.
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-overlay-alone:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this overlay
+        uses: actions/checkout@v4
+
+      - name: Validate overlay-alone compose
+        run: docker compose -f docker-compose.customer.yml config --quiet
+
+  validate-oss-plus-overlay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout openddil-demo (OSS base)
+        uses: actions/checkout@v4
+        with:
+          repository: edgy-solutions/openddil-demo
+          path: openddil/openddil-demo
+          ref: master
+
+      - name: Checkout this overlay alongside openddil-demo
+        uses: actions/checkout@v4
+        with:
+          path: openddil/openddil-customer-bundle-example
+
+      - name: Validate OSS + overlay compose
+        working-directory: openddil/openddil-demo
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f ../openddil-customer-bundle-example/docker-compose.customer.yml \
+            config --quiet

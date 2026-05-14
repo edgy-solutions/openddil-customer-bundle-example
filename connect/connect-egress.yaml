@@ -1,0 +1,73 @@
+# =============================================================================
+# Redpanda Connect — System B AMQP egress (Phase 3.5)
+# =============================================================================
+# Consumes asset-logistics-status from Kafka, translates the protobuf
+# AssetLogisticsStatusUpdate to System B's JSON envelope via Bloblang
+# (system-b-egress.yaml), and publishes to the RabbitMQ exchange
+# battle-mgmt.asset-status with a per-asset routing key.
+#
+# Vocabulary swap (Test 28): replace system-b-egress.yaml with
+# system-b-egress-fmc.yaml at the same path; Connect hot-reloads. The same
+# internal severity produces FMC/PMC/NMC labels with no code change.
+# =============================================================================
+logger:
+  level: INFO
+  format: logfmt
+  add_timestamp: true
+
+http:
+  enabled: true
+  address: 0.0.0.0:4197
+
+input:
+  kafka_franz:
+    seed_brokers: [ "redpanda-edge:9092" ]
+    topics: [ "asset-logistics-status" ]
+    consumer_group: "connect-system-b-egress"
+    # We want to ship NEW messages to System B, not replay history at startup.
+    start_offset: latest
+
+pipeline:
+  threads: 2
+  processors:
+    - try:
+        # 1. Decode AssetLogisticsStatusUpdate protobuf → structured JSON.
+        #    Connect's protobuf processor delivers the message as an already-
+        #    parsed structured object; downstream Bloblang can navigate it
+        #    directly without an intermediate parse_json step.
+        - protobuf:
+            operator: to_json
+            message: openddil.logistics.v1.AssetLogisticsStatusUpdate
+            import_paths: [ "/proto" ]
+        # 2. Apply the customer-vocabulary Bloblang. `this` is the structured
+        #    object produced above; the mapping reads fields like
+        #    `this.status.overallSeverity` directly.
+        - resource: "system_b_egress_mapping"
+    - catch:
+        - log:
+            level: WARN
+            message: "System B egress failure: ${! error() }"
+        - mapping: |
+            meta egress_error = error()
+            meta egress_dlq = "true"
+
+output:
+  switch:
+    cases:
+      - check: meta("egress_dlq") == "true"
+        output:
+          amqp_0_9:
+            urls: [ "amqp://openddil:openddil@rabbitmq:5672/" ]
+            exchange: "battle-mgmt.dlx"
+            key: "egress-error"
+            persistent: true
+      - output:
+          amqp_0_9:
+            urls: [ "amqp://openddil:openddil@rabbitmq:5672/" ]
+            exchange: "battle-mgmt.asset-status"
+            key: '${! meta("amqp_routing_key").or("asset.unknown.status") }'
+            persistent: true
+            mandatory: false
+            metadata:
+              exclude_prefixes: [ "kafka_" ]
+            max_in_flight: 64

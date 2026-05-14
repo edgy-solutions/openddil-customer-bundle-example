@@ -1,0 +1,137 @@
+# =============================================================================
+# OpenDDIL Customer Overlay — EXAMPLE bundle (publishable worked example)
+# =============================================================================
+# Layer on top of openddil/openddil-demo/docker-compose.yml:
+#
+#   docker compose \
+#     -f openddil/openddil-demo/docker-compose.yml \
+#     -f openddil-customer-bundle-example/docker-compose.customer.yml \
+#     up
+#
+# IMPORTANT PATH RESOLUTION NOTE: Docker Compose resolves relative paths
+# in ALL `-f` files relative to the FIRST `-f` file's directory (which is
+# openddil-demo). Every path in this file therefore uses
+# `../openddil-customer-bundle-example/...` even though that's awkward
+# at first read — it has to work from the openddil-demo working directory.
+# Cross-repo OSS paths (`../openddil-contracts/...`) reuse the OSS compose's
+# pattern.
+#
+# Adds (sim-a + system-b paths only — no proprietary):
+#   - RabbitMQ + rabbitmq-init (transport for sim-a ingress + system-b egress)
+#   - redpanda-connect-sim-a-amqp (AMQP → Kafka passthrough for sim-a)
+#   - redpanda-connect-customer (sim-a Bronze → Silver translation)
+#   - redpanda-connect-egress (asset-logistics-status → AMQP for System B)
+#
+# All content here is PLACEHOLDER and safe to publish. Real customer
+# integrations are private overlays in sibling directories (e.g.,
+# openddil-customer-bundle-customer-overlay/docker-compose.customer.yml). Multiple
+# overlays can be layered simultaneously via additional `-f` flags.
+# =============================================================================
+services:
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: openddil-demo-rabbitmq
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: openddil
+      RABBITMQ_DEFAULT_PASS: openddil
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq-init:
+    image: rabbitmq:3.13-management
+    container_name: openddil-demo-rabbitmq-init
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        apt-get update -qq && apt-get install -qq -y python3 >/dev/null 2>&1 || true
+        RMQ="rabbitmqadmin -H rabbitmq -u openddil -p openddil"
+        $$RMQ declare exchange name=sim-a.entity-state type=topic durable=true
+        $$RMQ declare queue    name=openddil.sim-a.ingress durable=true
+        $$RMQ declare binding  source=sim-a.entity-state destination=openddil.sim-a.ingress routing_key="entity.#"
+        $$RMQ declare exchange name=battle-mgmt.asset-status type=topic durable=true
+        $$RMQ declare exchange name=battle-mgmt.dlx type=fanout durable=true
+        $$RMQ declare queue    name=battle-mgmt.dlq durable=true
+        $$RMQ declare binding  source=battle-mgmt.dlx destination=battle-mgmt.dlq
+        echo "INFO: RabbitMQ exchanges/queues declared."
+
+  # AMQP → Kafka transport (no shape change).
+  redpanda-connect-sim-a-amqp:
+    image: docker.redpanda.com/redpandadata/connect:latest
+    container_name: openddil-demo-connect-sim-a-amqp
+    volumes:
+      - ../openddil-customer-bundle-example/connect/connect-sim-a-amqp.yaml:/connect.yaml:ro
+    environment:
+      SIM_A_KEY_FIELD: vehicle_id
+    command: ["--chilled", "run", "/connect.yaml"]
+    depends_on:
+      redpanda-edge:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      rabbitmq-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Example-overlay Bronze → Silver translation (sim-a only).
+  # The private overlay brings its own Connect container for proprietary;
+  # both publish to raw-sensor-stream (multi-producer pattern).
+  redpanda-connect-customer:
+    image: docker.redpanda.com/redpandadata/connect:latest
+    container_name: openddil-demo-connect-customer
+    volumes:
+      - ../openddil-customer-bundle-example/connect/openddil-customer-connect.yaml:/connect.yaml:ro
+      - ../openddil-customer-bundle-example/dynamic-mappings:/mappings:ro
+      - ../openddil-contracts/proto:/proto:ro
+      # OSS ontology base, then example overlay overrides the alias files.
+      - ../openddil-contracts/ontology:/ontology:ro
+      - ../openddil-customer-bundle-example/ontology/asset_identity_aliases.yaml:/ontology/asset_identity_aliases.yaml:ro
+      - ../openddil-customer-bundle-example/ontology/platform_variant_aliases.yaml:/ontology/platform_variant_aliases.yaml:ro
+    command:
+      - "--chilled"
+      - "run"
+      - "-r"
+      - "/mappings/sim-a-mapping.yaml"
+      - "/connect.yaml"
+    depends_on:
+      redpanda-edge:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Kafka → AMQP egress for System B (placeholder vocabulary).
+  redpanda-connect-egress:
+    image: docker.redpanda.com/redpandadata/connect:latest
+    container_name: openddil-demo-connect-egress
+    ports:
+      - "4197:4197"
+    volumes:
+      - ../openddil-customer-bundle-example/connect/connect-egress.yaml:/connect.yaml:ro
+      - ../openddil-customer-bundle-example/dynamic-mappings/egress:/mappings:ro
+      - ../openddil-contracts/proto:/proto:ro
+    command: ["--chilled", "run", "-r", "/mappings/system-b-egress.yaml", "/connect.yaml"]
+    depends_on:
+      redpanda-edge:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      rabbitmq-init:
+        condition: service_completed_successfully
+    restart: unless-stopped

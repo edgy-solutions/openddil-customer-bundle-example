@@ -1,0 +1,82 @@
+# OpenDDIL Customer Overlay — Worked Example — LLM Context
+
+This repository (`openddil-customer-bundle-example`) is a publishable
+worked example of the OpenDDIL customer-overlay pattern. It demonstrates
+how customer-specific feeds, ICDs, and ontology entries layer on top of
+the OSS demo without contaminating the OSS code.
+
+## Purpose
+
+The OSS OpenDDIL demo (`openddil-demo`) runs DIS-only out of the box.
+Real customers have proprietary ICDs and feeds (HTTP sensors, AMQP
+simulators, custom protocols). This example shows the overlay pattern:
+
+- A separate `docker-compose.customer.yml` adds customer-specific
+  services on top of the OSS base.
+- Customer Bronze→Silver mappings live in `dynamic-mappings/`.
+- Customer ontology aliases (asset_identity, platform_variant) layer
+  over the OSS ontology base.
+- Customer egress vocabularies (e.g., OK/DEGRADED/CRITICAL or
+  FMC/PMC/NMC) live in `dynamic-mappings/egress/`.
+
+All content here is **placeholder** — invented feed shapes, hull IDs,
+and vendor names. Real customers fork this template to a PRIVATE
+bundle outside the `openddil/` workspace.
+
+## Key Files
+
+- `docker-compose.customer.yml` — adds `rabbitmq`, `sim-a` AMQP
+  publisher, `redpanda-connect-sim-a-amqp` (AMQP→Kafka), and the
+  System B egress Connect container.
+- `connect/openddil-customer-connect.yaml` — sim-a Bronze→Silver
+  Connect pipeline.
+- `connect/connect-egress.yaml` — Kafka→AMQP egress for System B.
+- `dynamic-mappings/sim-a-mapping.yaml` — placeholder sim-a Bloblang.
+- `dynamic-mappings/egress/system-b-egress.yaml` — default egress
+  envelope (OK/DEGRADED/CRITICAL vocab).
+- `dynamic-mappings/egress/system-b-egress-fmc.yaml` — alt egress
+  vocabulary (FMC/PMC/NMC) for the same envelope.
+- `ontology/asset_identity_aliases.yaml`,
+  `ontology/platform_variant_aliases.yaml` — placeholder dis+sim_a
+  aliases. Layer over the OSS base via bind-mount in the Connect
+  containers.
+- `tests/_example_helpers.py` — re-exports OSS generic helpers
+  (`_cm_helpers`) AND provides sim-a/egress test plumbing. Private
+  bundles cross-import this to inherit one import root.
+- `tests/integration/run_all.py` — composed-stack regression gate
+  (OSS base + this overlay; 4 cross-boundary tests).
+
+## Composition Modes
+
+This overlay is designed to layer cleanly:
+
+| Mode | `docker compose -f ...` |
+|------|--------------------------|
+| OSS only | `openddil-demo/docker-compose.yml` |
+| OSS + example | OSS + `openddil/openddil-customer-bundle-example/docker-compose.customer.yml` |
+| OSS + private | OSS + `<customer-private>/docker-compose.customer.yml` |
+| OSS + example + private | All three |
+
+Compose path resolution: relative paths in ALL `-f` files resolve
+relative to the FIRST `-f` file's directory (always
+`openddil-demo`). This file uses `../openddil-customer-bundle-example/...`
+to find its own assets when invoked from inside `openddil-demo`.
+
+## Rules
+
+- This example is publishable; real customer bundles are NOT and live
+  outside `openddil/`.
+- The cross-import contract from `_example_helpers.py` is consumed by
+  private bundles — renaming a public helper here breaks them.
+- The overlay only references registry images; no `build:` directives.
+
+## Docker Compose
+
+Overlays the OSS base. The OSS base references
+`image: ghcr.io/edgy-solutions/openddil/...:latest` for OpenDDIL
+services. Connect containers in this overlay use
+`docker.redpanda.com/redpandadata/connect:latest`.
+
+NEVER add a `build:` to `docker-compose.customer.yml`. Source mounts
+for dev hot-reload of OSS services live in
+`openddil-demo/docker-compose.override.yml`, not here.

@@ -1,0 +1,50 @@
+processor_resources:
+  # NOTE: the label is intentionally `system_b_egress_mapping` (same as the
+  # default file) so the swap is a simple file replacement at
+  # /mappings/system-b-egress.yaml — Connect's resource lookup is by label,
+  # not filename. The vocabulary `match` block below is the only difference.
+  - label: system_b_egress_mapping
+    mapping: |
+      # =========================================================================
+      # ALTERNATE CONFIGURATION INJECTION POINT — FMC/PMC/NMC vocabulary
+      # =========================================================================
+      # Identical envelope to system-b-egress.yaml, EXCEPT the status
+      # vocabulary mapping. Demonstrates that switching customer vocabulary
+      # is a Bloblang-only change. To activate this scheme instead of the
+      # default, mount THIS file as
+      #   /mappings/system-b-egress.yaml
+      # via a docker-compose volume override, or edit the resource label
+      # in connect-egress.yaml to reference `system_b_egress_mapping_fmc`.
+      # Either way: no code, no rebuild.
+      # =========================================================================
+
+      let upd = this
+
+      let customer_status = match $upd.status.overallSeverity {
+        "LOGISTICS_SEVERITY_OK"               => "FMC"  # Fully Mission Capable
+        "LOGISTICS_SEVERITY_DEGRADED"         => "PMC"  # Partially Mission Capable
+        "LOGISTICS_SEVERITY_CRITICAL"         => "PMC"  # Still partially capable; failing
+        "LOGISTICS_SEVERITY_NON_OPERATIONAL"  => "NMC"  # Not Mission Capable
+        _                                     => "UNKNOWN"
+      }
+
+      root = {
+        "schema_version": "1.0",
+        "message_type":   "asset_subsystem_status",
+        "asset_id":       $upd.status.assetId.or(""),
+        "platform":       $upd.status.platformVariant.or(""),
+        "status":         $customer_status,
+        "is_transition":  $upd.isTransition.or(false),
+        "is_initial":     $upd.isInitial.or(false),
+        "revision":       $upd.status.statusRevision.or(0),
+        "computed_at":    $upd.status.computedAt.or(""),
+        "factors": $upd.status.constrainingFactors.or([]).map_each(f -> {
+          "factor":           f.factorId.or(""),
+          "severity":         f.severity.or("LOGISTICS_SEVERITY_UNSPECIFIED"),
+          "description":      f.description.or(""),
+          "current_value":    f.currentValue.or({}),
+          "threshold":        f.threshold.or({})
+        })
+      }
+
+      meta amqp_routing_key = "asset." + $upd.status.assetId.or("unknown") + ".status"

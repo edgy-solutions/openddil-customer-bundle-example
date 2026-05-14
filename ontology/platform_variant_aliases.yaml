@@ -1,0 +1,30 @@
+# =============================================================================
+# OpenDDIL Platform Variant Aliases — EXAMPLE OVERLAY (publishable)
+# =============================================================================
+# Mounted OVER the OSS file at /ontology/platform_variant_aliases.yaml in
+# the example overlay's Connect container. Placeholder content for the
+# sim-a feed only.
+#
+# Real customer aliases live in private overlays (e.g.,
+# openddil-customer-bundle-customer-overlay/ontology/...) and are NEVER published.
+# =============================================================================
+
+aliases:
+
+  sim_a:
+    - native: "M1A2-SEPv3"
+      canonical: "M1A2-SEPv3"
+      notes: "Placeholder: customer happens to use the canonical spelling"
+
+    - native: "M1A2 SEPv3"
+      canonical: "M1A2-SEPv3"
+      notes: "Placeholder: same hull, space-separated spelling (illustrates dialect reconciliation)"
+
+    - native: "AH-64E"
+      canonical: "AH-64E"
+      notes: "Placeholder: Apache attack helicopter"
+
+  dis:
+    # DIS doesn't carry platform_type strings — derived from the 7-tuple
+    # in openddil-contracts/ontology/dis_entity_types.yaml.
+    []

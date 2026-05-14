@@ -1,0 +1,40 @@
+# =============================================================================
+# OpenDDIL Asset Identity Aliases — EXAMPLE OVERLAY (publishable)
+# =============================================================================
+# Complete superset of openddil-contracts/ontology/asset_identity_aliases.yaml
+# plus the EXAMPLE feed sections (sim_a:). Mounted OVER the OSS file at
+# /ontology/asset_identity_aliases.yaml in the example overlay's Connect
+# container.
+#
+# All entries here are placeholder. Real customer aliases live in private
+# overlays (e.g., openddil-customer-bundle-customer-overlay/ontology/...) and
+# are NEVER published.
+# =============================================================================
+
+aliases:
+
+  dis:
+    - dis_entity_id: { site: 1, application: 1, entity: 4773 }
+      canonical_asset_id: "USA-ARMY-1HBCT-M1A2-4773"
+      notes: "Placeholder M1A2 SEPv3 hull #4773 (VR-Forces simulation)"
+
+    - dis_entity_id: { site: 1, application: 1, entity: 4774 }
+      canonical_asset_id: "USA-ARMY-1HBCT-M1A2-4774"
+      notes: "Placeholder M1A2 SEPv3 hull #4774 (VR-Forces simulation)"
+
+    - dis_entity_id: { site: 1, application: 1, entity: 8001 }
+      canonical_asset_id: "USA-ARMY-CAB-AH64-8001"
+      notes: "Placeholder AH-64E tail #8001 (VR-Forces simulation)"
+
+  sim_a:
+    - native: "SIM-A-001"
+      canonical_asset_id: "USA-ARMY-1HBCT-M1A2-4773"
+      notes: "Placeholder System A vehicle (cross-references DIS 1:1:4773)"
+
+    - native: "SIM-A-002"
+      canonical_asset_id: "USA-ARMY-1HBCT-M1A2-4774"
+      notes: "Placeholder System A vehicle (cross-references DIS 1:1:4774)"
+
+    - native: "SIM-A-CAB-01"
+      canonical_asset_id: "USA-ARMY-CAB-AH64-8001"
+      notes: "Placeholder System A vehicle (cross-references DIS 1:1:8001)"

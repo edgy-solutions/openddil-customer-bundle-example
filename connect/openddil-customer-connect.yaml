@@ -1,0 +1,71 @@
+logger:
+  level: INFO
+  format: logfmt
+  add_timestamp: true
+
+http:
+  enabled: true
+  address: 0.0.0.0:4198   # avoid clash with the OSS connect-egress (4197) and main (4196)
+
+# =============================================================================
+# Example overlay: sim-a Bronze → Silver translation
+# =============================================================================
+# This Connect container handles ONLY the sim-a feed:
+#   ingress-sim-a-raw → sim_a_mapping → raw-sensor-stream
+#
+# Other overlays (e.g., a private customer bundle handling proprietary HTTP)
+# bring their OWN Connect container so each overlay is independently
+# composable. The OSS redpanda-connect container handles ingress-dis-raw
+# and the diagnostic HTTP endpoint. All Connect containers publish to the
+# same Silver topic (raw-sensor-stream) — multi-producer pattern.
+# =============================================================================
+input:
+  kafka_franz:
+    seed_brokers: [ "redpanda-edge:9092" ]
+    topics: [ "ingress-sim-a-raw" ]
+    consumer_group: "connect-sim-a-mapper"
+    start_from_oldest: true
+
+pipeline:
+  threads: 4
+  processors:
+    - try:
+      - mapping: |
+          root = if this.type() == "string" || this.type() == "bytes" {
+            this.parse_json()
+          } else {
+            this
+          }
+      - resource: "sim_a_mapping"
+      - mapping: |
+          meta asset_id = this.asset.asset_id
+      - protobuf:
+          operator: from_json
+          message: openddil.telemetry.v1.EntityTelemetryEvent
+          import_paths: [ "/proto" ]
+
+    - catch:
+      - log:
+          level: WARN
+          message: "sim-a ingress failure: ${! error() }"
+      - mapping: |
+          meta dlq_reason = error()
+          meta dlq_stage = "sim_a_mapping_or_protobuf_encode"
+          meta is_dlq = "true"
+
+output:
+  switch:
+    cases:
+      - check: meta("is_dlq") == "true"
+        output:
+          kafka_franz:
+            topic: "ingress-dlq"
+            seed_brokers: [ "redpanda-edge:9092" ]
+      - output:
+          kafka_franz:
+            seed_brokers: [ "redpanda-edge:9092" ]
+            topic: "raw-sensor-stream"
+            key: '${! meta("asset_id") }'
+            metadata:
+              include_patterns: [ "ce_.*", "schema_.*" ]
+            max_in_flight: 64

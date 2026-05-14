@@ -1,0 +1,9 @@
+# Cursor Rules for OpenDDIL Customer Overlay (Worked Example)
+
+- **Context**: Publishable worked example of the OpenDDIL customer-overlay pattern. All content is placeholder — invented feed shapes (`sim_a`), invented hull IDs, invented vendors. No real customer ICD lives here.
+- **Real customer bundles** live OUTSIDE `openddil/` as private repos (`openddil-customer-bundle-<customer>/`). They cross-import `tests/_example_helpers.py` from this repo for OSS generic plumbing and sim-a publishers.
+- **Cross-import contract**: Renaming or removing a public helper in `_example_helpers.py` breaks every private bundle in the wild. Coordinate breaking changes.
+- **Compose path resolution**: Docker Compose resolves relative paths in ALL `-f` files relative to the FIRST `-f` file's directory (always `openddil-demo`). Paths in `docker-compose.customer.yml` use `../openddil-customer-bundle-example/...`.
+- **Registry images only**: `docker-compose.customer.yml` references `ghcr.io/edgy-solutions/openddil/...`, `docker.redpanda.com/...`, and `rabbitmq:3.13-management`. NEVER add a `build:` directive — source mounts for OSS service dev hot-reload live in `openddil-demo/docker-compose.override.yml`.
+- **Publishability**: This repo is public (MIT). Anything that looks like a real ICD field, real radar serial, real frequency table, or real hull identifier belongs in a PRIVATE bundle, not here.
+- **Integration runner**: `tests/integration/run_all.py` is the composed-stack regression gate. CI runs `docker compose config --quiet` against the four canonical layering modes (`.github/workflows/compose-validate.yml`).

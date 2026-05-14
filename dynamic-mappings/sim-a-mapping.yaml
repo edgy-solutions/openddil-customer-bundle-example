@@ -1,0 +1,135 @@
+processor_resources:
+  - label: sim_a_mapping
+    mapping: |
+      # =========================================================================
+      # CONFIGURATION INJECTION POINT
+      # =========================================================================
+      # System A's native message shape is a placeholder pending real
+      # integration. When the real proprietary shape arrives, only THIS file
+      # changes — no Python code, no service rebuild. The sidecar
+      # (sim_a_ingestor.py) is a dumb passthrough; identity resolution,
+      # Quantity tagging, and sustainment projection all happen here.
+      #
+      # Per ADR-0010: feed-specific quirks live in feed-specific Bloblang.
+      # Per ADR-0013: no math here; tag Quantity fields with the source's
+      #               native unit verbatim, let pint convert downstream.
+      # Per ADR-0007/0006: no algorithms in the mapping.
+      #
+      # Placeholder native shape (replace when real ICD lands):
+      #   {
+      #     "vehicle_id":     "SIM-A-001",          # Kafka key (sidecar key field)
+      #     "callsign":       "IRON-LEAD",          # optional
+      #     "platform_type":  "M1A2-SEPv3",         # optional
+      #     "timestamp":      "2026-05-13T12:34:56Z",
+      #     "sequence":       42,
+      #     "position":       { "x": -796104.6, "y": -5417889.3, "z": 3280898.7 },
+      #     "velocity":       { "x": 0.0, "y": 0.0, "z": 0.0 },
+      #     "fuel":           { "main_tank": 285.5 },           # gallons US
+      #     "weapons": [
+      #       { "station_id": "main_gun", "rounds_remaining": 32, "rounds_capacity": 40, "nsn": "1315-..." },
+      #       { "station_id": "coax",     "rounds_remaining": 1800, "rounds_capacity": 2000 }
+      #     ],
+      #     "subsystems": [
+      #       { "subsystem_id": "POWERPLANT",   "health": "OPERATIONAL" },
+      #       { "subsystem_id": "TRANSMISSION", "health": "DEGRADED" }
+      #     ]
+      #   }
+      # =========================================================================
+
+      # The Kafka input delivers raw bytes; coerce to a parsed object first.
+      let src = if this.type() == "string" || this.type() == "bytes" {
+        this.parse_json()
+      } else {
+        this
+      }
+
+      root.event_id = uuid_v4()
+      root.schema_revision = 1
+
+      # ---------------- Identity reconciliation ----------------
+      # Look up vehicle_id in asset_identity_aliases.yaml.sim_a; fall back
+      # to a URN-style ID so unknown vehicles are still trackable.
+      let aliases_doc = file(path: "/ontology/asset_identity_aliases.yaml",
+                              no_cache: true).parse_yaml()
+      let sim_a_aliases = $aliases_doc.aliases.sim_a.or([])
+      let matched = $sim_a_aliases.filter(
+        a -> a.native == $src.vehicle_id
+      )
+      let canonical_id = if $matched.length() > 0 {
+        $matched.index(0).canonical_asset_id
+      } else {
+        "sim_a:" + $src.vehicle_id
+      }
+      root.asset.asset_id      = $canonical_id
+      root.asset.callsign      = $src.callsign.or("")
+      root.asset.platform_type = $src.platform_type.or("")
+
+      # Platform variant reconciliation — parallel to asset identity.
+      # Look up the native platform_type string in platform_variant_aliases.yaml
+      # and emit the canonical variant key. On miss, emit "UNKNOWN" rather
+      # than passing the native string through (which would cause silent
+      # ontology drift, per ADR-0010 generalized to variant-level identifiers).
+      let variant_doc = file(path: "/ontology/platform_variant_aliases.yaml",
+                              no_cache: true).parse_yaml()
+      let variant_aliases = $variant_doc.aliases.sim_a.or([])
+      let variant_match = $variant_aliases.filter(
+        a -> a.native == $src.platform_type.or("")
+      )
+      root.asset.platform_variant = if $variant_match.length() > 0 {
+        $variant_match.index(0).canonical
+      } else {
+        "UNKNOWN"
+      }
+      root.asset.force         = "FORCE_FRIENDLY"
+
+      # ---------------- Kinematics ----------------
+      # Placeholder assumes ECEF meters; adjust when real shape is known.
+      root.kinematics.position.ecef.x.value = $src.position.x
+      root.kinematics.position.ecef.x.unit  = "m"
+      root.kinematics.position.ecef.y.value = $src.position.y
+      root.kinematics.position.ecef.y.unit  = "m"
+      root.kinematics.position.ecef.z.value = $src.position.z
+      root.kinematics.position.ecef.z.unit  = "m"
+      root.kinematics.position.valid_at         = $src.timestamp
+      root.kinematics.position.quality.source   = "POS_SRC_SIMULATED"
+
+      # Velocity Vector3 — shared unit on the wire (not per-component Quantity).
+      # ECEF velocity in m/s.
+      root.kinematics.velocity.ecef.x = $src.velocity.x.or(0.0)
+      root.kinematics.velocity.ecef.y = $src.velocity.y.or(0.0)
+      root.kinematics.velocity.ecef.z = $src.velocity.z.or(0.0)
+      root.kinematics.velocity.ecef.unit = "m/s"
+
+      # ---------------- Sustainment (the differentiator vs DIS) ----------------
+      # Fuel — main_tank in gallons US per placeholder shape.
+      root.sustainment.fluids.fuel_remaining.value = $src.fuel.main_tank.or(0.0)
+      root.sustainment.fluids.fuel_remaining.unit  = "gal_us"
+
+      # Ammunition — map by station_id → ConsumableState (uint32 fields).
+      # fold builds a {slot_id: ConsumableState} map across the weapons[] array.
+      root.sustainment.consumables.items = $src.weapons.or([]).fold(
+        {},
+        item -> item.tally.merge({
+          item.value.station_id: {
+            "quantity_remaining": item.value.rounds_remaining.or(0),
+            "quantity_capacity":  item.value.rounds_capacity.or(0),
+            "nsn":                item.value.nsn.or(""),
+          }
+        })
+      )
+
+      # Subsystem health — proprietary string statuses passed through as
+      # "subsystem_id:health" tokens. Fusion-side severity mapping is
+      # applied in openddil-logistics-fusion-service/fusion/rules.py
+      # (SUBSYSTEM_HEALTH_MAP). Filter out fully nominal subsystems.
+      root.sustainment.health.active_fault_codes = $src.subsystems.or([]).filter(
+        s -> s.health != "OPERATIONAL"
+      ).map_each(s -> s.subsystem_id + ":" + s.health)
+
+      # ---------------- Provenance ----------------
+      root.provenance.producer_id     = "sim-a-ingestor"
+      root.provenance.source_protocol = "sim-a-v1"
+      root.provenance.source_sequence = $src.sequence.or(0)
+      root.provenance.sample_time     = $src.timestamp
+      root.provenance.ingest_time     = now()
+      root.provenance.classification  = "U"
