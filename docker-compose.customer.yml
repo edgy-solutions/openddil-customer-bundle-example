@@ -77,7 +77,7 @@ services:
       SIM_A_KEY_FIELD: vehicle_id
     command: ["--chilled", "run", "/connect.yaml"]
     depends_on:
-      redpanda-edge:
+      redpanda-edge-01:
         condition: service_healthy
       redpanda-init:
         condition: service_completed_successfully
@@ -108,7 +108,7 @@ services:
       - "/mappings/sim-a-mapping.yaml"
       - "/connect.yaml"
     depends_on:
-      redpanda-edge:
+      redpanda-edge-01:
         condition: service_healthy
       redpanda-init:
         condition: service_completed_successfully
@@ -126,7 +126,7 @@ services:
       - ../openddil-contracts/proto:/proto:ro
     command: ["--chilled", "run", "-r", "/mappings/system-b-egress.yaml", "/connect.yaml"]
     depends_on:
-      redpanda-edge:
+      redpanda-edge-01:
         condition: service_healthy
       redpanda-init:
         condition: service_completed_successfully

@@ -21,7 +21,7 @@ http:
 
 input:
   kafka_franz:
-    seed_brokers: [ "redpanda-edge:9092" ]
+    seed_brokers: [ "redpanda-edge-01:9092" ]
     topics: [ "asset-logistics-status" ]
     consumer_group: "connect-system-b-egress"
     # We want to ship NEW messages to System B, not replay history at startup.

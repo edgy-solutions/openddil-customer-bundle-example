@@ -47,7 +47,7 @@ pipeline:
 
 output:
   kafka_franz:
-    seed_brokers: [ "redpanda-edge:9092" ]
+    seed_brokers: [ "redpanda-edge-01:9092" ]
     topic: "ingress-sim-a-raw"
     key: '${! meta("kafka_key") }'
     compression: zstd

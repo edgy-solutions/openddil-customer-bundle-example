@@ -21,7 +21,7 @@ http:
 # =============================================================================
 input:
   kafka_franz:
-    seed_brokers: [ "redpanda-edge:9092" ]
+    seed_brokers: [ "redpanda-edge-01:9092" ]
     topics: [ "ingress-sim-a-raw" ]
     consumer_group: "connect-sim-a-mapper"
     start_from_oldest: true
@@ -60,10 +60,10 @@ output:
         output:
           kafka_franz:
             topic: "ingress-dlq"
-            seed_brokers: [ "redpanda-edge:9092" ]
+            seed_brokers: [ "redpanda-edge-01:9092" ]
       - output:
           kafka_franz:
-            seed_brokers: [ "redpanda-edge:9092" ]
+            seed_brokers: [ "redpanda-edge-01:9092" ]
             topic: "raw-sensor-stream"
             key: '${! meta("asset_id") }'
             metadata:
