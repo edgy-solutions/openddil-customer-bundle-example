@@ -1,10 +1,17 @@
 name: Compose Validate
 
 # Syntactic smoke test for the customer overlay. Runs `docker compose config
-# --quiet` against the two canonical layering modes that this repo controls:
+# --quiet` against the supported public composition: the OSS base layered
+# with this overlay.
 #
-#   1. This overlay alone (every relative path inside the file resolves)
-#   2. OSS base + this overlay (the supported public composition)
+# Why not also validate the overlay on its own? The overlay's services
+# declare `depends_on` against base services (redpanda-edge-01,
+# redpanda-init), and `docker compose config` enforces depends_on
+# referential integrity — so an overlay carrying cross-file dependencies
+# cannot be validated in isolation. That is by design: an overlay is meant
+# to be layered. The base+overlay job below validates the real, supported
+# composition — including every relative path and variable interpolation
+# in this file — so a standalone job would add nothing but a false red.
 #
 # The OSS+example+private and OSS+private modes are NOT validated here —
 # private bundles live in private repos and are not visible to this CI.
@@ -25,15 +32,6 @@ permissions:
   contents: read
 
 jobs:
-  validate-overlay-alone:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout this overlay
-        uses: actions/checkout@v4
-
-      - name: Validate overlay-alone compose
-        run: docker compose -f docker-compose.customer.yml config --quiet
-
   validate-oss-plus-overlay:
     runs-on: ubuntu-latest
     steps:
