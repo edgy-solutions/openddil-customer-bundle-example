@@ -1,0 +1,92 @@
+# =============================================================================
+# Sample deployment manifest — tier presentation node enablement
+# =============================================================================
+# PROVENANCE: authored fiction. Fictional sites, fictional nations, fictional
+# asset identifiers. Definitive for the sample deployment; attests nothing
+# about any real one. See overlay-manifest.yaml classes `deployment-manifests`
+# and `chart-overlay`.
+#
+# WHY THIS IS A TEST FIXTURE, NOT DOCUMENTATION:
+#
+# Arc 1 Phase 3 added the tier presentation node (ADR-0032 §d) to the chart,
+# gated off by default. This values overlay is what the template is VALIDATED
+# AGAINST — the acceptance test is "the chart renders and deploys with these
+# values", not "a sample file exists". Fictional content stays honest by
+# construction because it has to actually work.
+#
+# Usage:
+#   helm template ../../openddil-helm/openddil-demo -f k8s/tier-node-values.yaml
+#   helm upgrade --install openddil ../../openddil-helm/openddil-demo \
+#     -f k8s/tier-node-values.yaml -n <ns>
+# =============================================================================
+
+# --- Tier topology ----------------------------------------------------------
+# Fictional sites. Nation prefixes match the sample sensor schema's identity
+# convention (<NATION>_<SITE>_<SYSTEM>_<ROLE>) so the mapping's
+# originator_nation parse produces these codes — the releasability chain is
+# exercisable end to end without a single real national label.
+#
+#   ATL — Atlantis        BDR — Borduria        SYL — Syldavia
+#
+# All three are invented. ADR-0029's cross-national demonstration is intended
+# to run publicly in CI against exactly these.
+edges:
+  - id: edge-northpoint
+    region: region-north
+    udpPort: 62040
+  - id: edge-capeverdant
+    region: region-south
+    udpPort: 62041
+
+regions:
+  - id: region-north
+  - id: region-south
+
+# --- Tier presentation node -------------------------------------------------
+# The unit under test. Enabling this is what makes each site's operators able
+# to see their own site's truth, and keep seeing it when the uplink is cut.
+tierNode:
+  enabled: true
+
+  # Empty => every configured tier. Named explicitly here so the fixture
+  # exercises the tier-selection path rather than only the default.
+  tiers:
+    - edge-northpoint
+    - edge-capeverdant
+
+  postgres:
+    # emptyDir keeps the fixture runnable on clusters without a default
+    # StorageClass (and the store is derived, not durable — ADR-0032 §d —
+    # so losing it costs a replay, not data).
+    useEmptyDir: true
+    resources:
+      requests: { cpu: 100m, memory: 256Mi }
+      limits:   { cpu: 500m, memory: 1Gi }
+
+  restate:
+    # 6 is the measured tier profile (ADR-0032 §d): ~167 MiB RSS idle vs
+    # ~389 MiB at the product default of 24. PROVISION-TIME ONLY — this
+    # cannot be changed after the node first boots, so the fixture pins it
+    # deliberately rather than inheriting a default.
+    defaultNumPartitions: 6
+    useEmptyDir: true
+
+  topaz:
+    # Deployed, healthy, deciding nothing — Arc 2's landing zone.
+    enabled: true
+
+# --- Sample overlay wiring --------------------------------------------------
+# The sample deployment's own artifacts. Paths are relative to the overlay
+# bundle root; a real deployment substitutes its own and changes nothing
+# structural.
+#
+#   baselines/   — SENTRY_MK3-Baseline-2026.1.yaml, the fixture that makes a
+#                  tier's cm-service produce meaningful CM state rather than
+#                  an empty gesture (gate finding: the mount is load-bearing).
+#   dynamic-mappings/ — sample-sensor-mapping.yaml, the ADR-0030 worked
+#                  example (combined-enum -> three-axis decomposition).
+#   schemas/     — the wire shape the mapping maps FROM.
+sampleOverlay:
+  baselinesPath: baselines/
+  mappingsPath: dynamic-mappings/
+  schemasPath: schemas/

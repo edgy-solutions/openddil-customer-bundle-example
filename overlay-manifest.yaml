@@ -110,8 +110,7 @@ classes:
       Versioned reference data distributed to tiers (ADR-0032 §c passenger 5).
     path: baselines/
     required: true
-    status: MISSING
-    travels_with: phase-3
+    status: present
     notes: >
       Load-bearing, not decoration: a tier's cm-service produces meaningless
       output without baselines mounted. Discovered by the Arc 1 Phase 3 gate.
@@ -155,7 +154,19 @@ classes:
     path: chart/
     required: false
     status: MISSING
-    travels_with: phase-3
+    travels_with: deferred
+    notes: >
+      DELIBERATELY still open after Phase 3, with the reason recorded rather
+      than left as an unexplained gap.
+
+      Phase 3's validation need is met by the `deployment-manifests` class: a
+      values overlay the tier-node template is rendered against. A CHART
+      overlay is a different artifact — it packages a deployment's OWN
+      services on top of the OSS chart — and nothing in Phase 3 exercises it,
+      so building one now would be a fixture with no test behind it.
+
+      It lands when a sample-deployment service actually needs packaging.
+      Until then this row says "known, not forgotten".
 
   - id: deployment-manifests
     purpose: >
@@ -163,8 +174,7 @@ classes:
       node/tier assignment, environment values).
     path: k8s/
     required: false
-    status: MISSING
-    travels_with: phase-3
+    status: present
 
   - id: mapping-unit-tests
     purpose: >

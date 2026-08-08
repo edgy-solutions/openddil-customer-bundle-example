@@ -1,0 +1,80 @@
+# =============================================================================
+# Sample deployment baseline: SENTRY_MK3 sensor — version 2026.1
+# =============================================================================
+# PROVENANCE: authored fiction. There is no real SENTRY_MK3. This baseline was
+# written for the public sample overlay, is definitive for the fictional
+# deployment it describes, and attests nothing about any real platform's
+# configuration. See overlay-manifest.yaml class `cm-baselines`.
+#
+# WHY THIS FILE EXISTS AS A TEST FIXTURE, NOT DOCUMENTATION:
+#
+# The tier presentation node (ADR-0032 §d) runs cm-service at every tier, and
+# the Arc 1 Phase 3 gate found that cm-service's baselines mount is
+# LOAD-BEARING: without a baseline matching an observed asset's
+# platform_variant, the service produces no meaningful CM state. A tier node
+# rendered against an overlay with no baselines would start cleanly and
+# produce an empty gesture.
+#
+# So this baseline is the fixture the tier-node template is validated
+# AGAINST. Its acceptance test is behavioural, not "the file exists": deploy
+# the node against this overlay, feed it a SENTRY_MK3 asset, and CM state must
+# appear with populated discrepancies.
+#
+# The variant matches what dynamic-mappings/sample-sensor-mapping.yaml aliases
+# SENTRY_MK3 to, so the fixture chain is closed:
+#     schema -> mapping -> platform_variant -> baseline -> CM state
+#
+# Initial state is deliberately non-clean: every non-optional slot fires
+# DISCREPANCY_MISSING_CI and every required mod fires its own discrepancy
+# until part-installation and mod-application events arrive. That is the
+# intended demonstration state — a CM card with something in it — and it is
+# also what makes the fixture prove the pipeline rather than merely survive it.
+# =============================================================================
+
+baseline_id: "SENTRY_MK3-Baseline-2026.1"
+platform_variant: "MRAD_Sensor"
+version: "2026.1"
+effective_from: "2026-01-01T00:00:00Z"
+superseded_at: null
+
+authorized_cis:
+  # Transmit/receive module, modelled at field-replaceable-unit level.
+  - slot_id: "tr_module"
+    acceptable_part_numbers:
+      - "SAMPLE-TRM-RevA-SN-10001"
+      - "SAMPLE-TRM-RevB-SN-10002"
+    minimum_revision: "RevA"
+    optional: false
+
+  # Primary DC bus supply.
+  - slot_id: "power_supply"
+    acceptable_part_numbers:
+      - "SAMPLE-PSU-1800W-SN-20001"
+    minimum_revision: ""
+    optional: false
+
+  # Cooling loop. Failure trips the array to safe mode.
+  - slot_id: "cooling_fan"
+    acceptable_part_numbers:
+      - "SAMPLE-FAN-A2-SN-30001"
+    minimum_revision: ""
+    optional: false
+
+  # Beam-steering controller.
+  - slot_id: "processor"
+    acceptable_part_numbers:
+      - "SAMPLE-SOC-RevA-SN-40001"
+      - "SAMPLE-SOC-RevB-SN-40002"
+    minimum_revision: "RevA"
+    optional: false
+
+required_mods:
+  - mod_id: "SAMPLE-MWO-2026-001"
+    title: "Cooling loop flow-sensor retrofit"
+    due_by: "2026-09-30T00:00:00Z"
+    applies_to_slots: ["cooling_fan"]
+
+  - mod_id: "SAMPLE-MWO-2026-002"
+    title: "Beam controller firmware update"
+    due_by: "2026-12-31T00:00:00Z"
+    applies_to_slots: ["processor"]
