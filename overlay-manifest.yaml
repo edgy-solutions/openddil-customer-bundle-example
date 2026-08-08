@@ -183,7 +183,27 @@ classes:
     path: tests/bloblang/
     required: false
     status: MISSING
-    travels_with: repoint-motion
+    travels_with: post-pilot
+    notes: >
+      RE-SCOPED 2026-08-08 after verifying the pinned engine rather than
+      assuming it.
+
+      The expectation was a YAML unit-test harness (the Benthos lineage
+      shipped `benthos test` for years). VERIFIED FALSE for the pinned
+      Redpanda Connect image: its CLI offers dry-run / agent / mcp-server /
+      plugin / echo / lint / run / streams / list / create. There is no
+      `test` subcommand.
+
+      So this class re-scopes to GOLDEN-FILE testing: run the mapping over a
+      sample input and diff against expected output. Still small, still a
+      binary-fetch CI step, but a different shape than assumed.
+
+      Cheap intermediate available immediately and worth taking first:
+      `redpanda-connect lint` validates that the mapping config parses,
+      which catches the most common breakage (a malformed Bloblang edit)
+      without any harness at all.
+
+      Deliberately behind the pilot — nothing here gates it.
 
   # --- prospective ------------------------------------------------------------
   # Classes the architecture has designated but which do not exist in any
