@@ -1,0 +1,187 @@
+# =============================================================================
+# Deployment-overlay artifact manifest
+# =============================================================================
+# THE PUBLIC CONTRACT for what a deployment overlay consists of.
+#
+# OpenDDIL's open core meets closed worlds at the overlay seam: the core ships
+# mechanisms, an overlay supplies the deployment-specific content those
+# mechanisms execute. Real overlays are private by necessity — they carry
+# proprietary wire shapes, controlled-spec definitions, national procedures.
+#
+# That creates a credibility problem this file exists to solve. If the only
+# instantiations of the seam are invisible, then:
+#   * CI cannot exercise the overlay mechanism at all;
+#   * worked-example pedagogy points at things its audience cannot open;
+#   * test harnesses invent throwaway fixtures per run.
+#
+# So THIS bundle is the public twin: structurally isomorphic to a real
+# deployment overlay, with entirely fictional content. The rule
+# (openddil-contracts/decisions/PRINCIPLES.md §"Public twin, declared by
+# manifest") is:
+#
+#     Any artifact class a deployment overlay carries must have a sanitized
+#     twin here. Structure mirrors; content is fictional.
+#
+# And the check is deliberately expressible WITHOUT reference to any private
+# material:
+#
+#     sample overlay  ⊇  this manifest
+#
+# which runs anywhere — including CI, where private overlays do not exist.
+# Content parity is neither possible nor desired: this bundle's content is
+# invented by design.
+#
+# CONTENT RULES for anything added here:
+#   * Fictional sites, fictional asset identifiers, fictional platform names.
+#   * FICTIONAL NATIONS. Releasability work (ADR-0029) demonstrates
+#     cross-national access control; doing that publicly requires invented
+#     national labels so the mechanism is provable with zero real labels
+#     involved. Use clearly-invented codes.
+#   * Never copy content from a real deployment. Mirror its SHAPE.
+# =============================================================================
+
+version: 1
+
+classes:
+
+  # --- present today ---------------------------------------------------------
+
+  - id: connect
+    purpose: >
+      Redpanda Connect pipeline definitions binding a deployment's transports
+      (AMQP, HTTP, file) to OpenDDIL ingress topics.
+    path: connect/
+    required: true
+    status: present
+
+  - id: ingress-mappings
+    purpose: >
+      Bloblang mappings translating a source's raw JSON into the Silver
+      ontology — identity aliasing, platform_variant resolution, kinematics,
+      OperationalState decomposition, provenance stamping (ADR-0030 Stage 2).
+    path: dynamic-mappings/
+    required: true
+    status: present
+    notes: >
+      This is the class ADR-0030 designates as the worked example for adapter
+      authors. It is therefore the highest-value entry in this manifest: the
+      pedagogy is only as good as the public specimen.
+
+  - id: egress-mappings
+    purpose: >
+      Outbound mappings projecting OpenDDIL state into a consuming system's
+      vocabulary (e.g. readiness-vocabulary swaps).
+    path: dynamic-mappings/egress/
+    required: false
+    status: present
+
+  - id: ontology-overlay
+    purpose: >
+      Deployment-specific identity aliases and platform_variant aliases
+      (ADR-0015, ADR-0016).
+    path: ontology/
+    required: true
+    status: present
+
+  - id: integration-tests
+    purpose: >
+      Tests proving the overlay's mappings and pipelines behave against the
+      core — the public seam's CI surface.
+    path: tests/
+    required: true
+    status: present
+
+  - id: compose-profile
+    purpose: >
+      Compose overlay layering the deployment's services onto the OSS demo
+      stack.
+    path: docker-compose.customer.yml
+    required: true
+    status: present
+
+  # --- declared, not yet twinned --------------------------------------------
+  # Each of these is an artifact class the seam is known to carry. Absence
+  # here is a parity gap, not an argument that the class does not exist.
+
+  - id: cm-baselines
+    purpose: >
+      ConfigurationBaseline definitions per platform variant — what compliance
+      MEANS for a platform (installed-CI slots, required modifications).
+      Versioned reference data distributed to tiers (ADR-0032 §c passenger 5).
+    path: baselines/
+    required: true
+    status: MISSING
+    notes: >
+      Load-bearing, not decoration: a tier's cm-service produces meaningless
+      output without baselines mounted. Discovered by the Arc 1 Phase 3 gate.
+
+  - id: wire-schemas
+    purpose: >
+      Schema documents describing a source's wire shape, plus routing-key and
+      unit references. What a mapping is authored against.
+    path: schemas/
+    required: false
+    status: MISSING
+    notes: >
+      Provenance discipline applies hard here (PRINCIPLES §Claims vs.
+      sources): a schema reconstructed by inference is not a contract, and a
+      public twin must not model one as if it were. Label the specimen's
+      provenance explicitly.
+
+  - id: chart-overlay
+    purpose: >
+      Helm chart overlay layering deployment services onto the OSS chart —
+      the Kubernetes counterpart of the compose profile.
+    path: chart/
+    required: false
+    status: MISSING
+
+  - id: deployment-manifests
+    purpose: >
+      Cluster manifests and per-site deployment configuration (site topology,
+      node/tier assignment, environment values).
+    path: k8s/
+    required: false
+    status: MISSING
+
+  - id: mapping-unit-tests
+    purpose: >
+      Bloblang-level unit tests for the ingress mappings, distinct from
+      end-to-end integration tests.
+    path: tests/bloblang/
+    required: false
+    status: MISSING
+
+  # --- prospective ------------------------------------------------------------
+  # Classes the architecture has designated but which do not exist in any
+  # overlay yet. Listed so the manifest stays the single home for the answer
+  # to "what does an overlay carry?" as the seam grows.
+
+  - id: policy-corpus
+    purpose: >
+      Asserted entitlements and policy content for the deployment's local
+      authorizers — subject attributes, releasability rules (ADR-0029).
+    path: policy/
+    required: false
+    status: PROSPECTIVE
+    notes: >
+      Requires fictional nations. This class is what makes a public
+      cross-national releasability demonstration possible in CI.
+
+  - id: workflow-definitions
+    purpose: >
+      Sovereignty-specific maintainer process workflows — a deployment's own
+      inspection / sign-off / requisition procedures (ADR-0034 §The two
+      planes).
+    path: workflows/
+    required: false
+    status: PROSPECTIVE
+
+  - id: format-definitions
+    purpose: >
+      Binary-format grammars or middleware participant configs for
+      controlled-spec ingress the OSS core cannot ship (ADR-0030 §Controlled-
+      spec formats, §Ingress classes).
+    path: formats/
+    required: false
+    status: PROSPECTIVE
