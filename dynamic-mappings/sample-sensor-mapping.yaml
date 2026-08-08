@@ -1,0 +1,161 @@
+# =============================================================================
+# Sample ingress mapping — WORKED EXAMPLE for adapter authors
+# =============================================================================
+# This is the public specimen ADR-0030 designates as the reference for anyone
+# writing a new ingress mapping. It maps the fictional SENTRY-series sensor
+# (schemas/sample_sensor_message.schema.json) into the OpenDDIL Silver
+# ontology.
+#
+# EVERYTHING HERE IS FICTIONAL — nations, sites, asset identifiers, platform
+# designations. The SHAPE is real; the content is invented (see
+# overlay-manifest.yaml).
+#
+# The four disciplines this file demonstrates, each with an ADR behind it:
+#
+#   1. IDENTITY (ADR-0015)  — native id -> canonical asset_id, scheme-prefixed.
+#   2. VARIANT   (ADR-0016) — native platform_type -> canonical platform_variant
+#                             via the alias map. NEVER hardcoded here.
+#   3. UNITS     (ADR-0013) — carry the source's native unit verbatim as a
+#                             Quantity. NO MATH IN THE MAPPING.
+#   4. STATE     (ADR-0026) — decompose the source's COMBINED state enum into
+#                             three orthogonal axes. This is the centrepiece.
+#
+# Plus provenance stamping, including releasability labels (ADR-0029).
+#
+# WHAT DOES NOT BELONG HERE (ADR-0030 boundary statement):
+#   Bloblang maps STRUCTURED data to the ontology. It does not decode binary
+#   grammars. If your source is a packed binary wire format, you need a
+#   decoder sidecar in front of this, not more Bloblang.
+# =============================================================================
+
+processor_resources:
+  - label: sample_sensor_mapping
+    mapping: |
+      # ---------------------------------------------------------------------
+      # 1. IDENTITY — ADR-0015
+      # ---------------------------------------------------------------------
+      # Canonical asset_id is scheme-prefixed so downstream joins never have
+      # to guess which producer an id came from. The prefix is a namespace
+      # marker, not decoration: two sources may legitimately use the same
+      # native id for different assets.
+      root.asset.asset_id = "sample:" + this.sensor_id
+      root.asset.callsign = this.callsign | ""
+
+      # ---------------------------------------------------------------------
+      # 2. PLATFORM VARIANT — ADR-0016
+      # ---------------------------------------------------------------------
+      # Resolved through the alias map (ontology/platform_variant_aliases.yaml),
+      # NOT hardcoded here. A new native designation is an ontology PR, not a
+      # mapping change — which is the whole point of the split.
+      #
+      # Passthrough on miss: an unaliased variant flows through unchanged and
+      # the ontology-drift check flags it, rather than the mapping silently
+      # inventing a canonical name.
+      let variant_alias = {
+        "SENTRY_MK3":     "MRAD_Sensor",
+        "SENTRY_MK3_EXT": "MRAD_ADVANCED_Sensor"
+      }
+      root.asset.platform_variant = $variant_alias.get(this.platform_type) | this.platform_type
+
+      # ---------------------------------------------------------------------
+      # 3. KINEMATICS + UNITS — ADR-0013
+      # ---------------------------------------------------------------------
+      # Tag each scalar with the SOURCE's native unit and let pint convert
+      # downstream. Do not normalise here; a mapping that converts units is a
+      # mapping that has started doing algorithms.
+      root.kinematics.position.wgs84.lat = this.position.lat_deg
+      root.kinematics.position.wgs84.lon = this.position.lon_deg
+      root.kinematics.position.wgs84.alt = {
+        "unit":  "m",
+        "value": this.position.alt_m | 0
+      }
+
+      # ---------------------------------------------------------------------
+      # 4. OPERATIONAL STATE — ADR-0026  *** THE CENTREPIECE ***
+      # ---------------------------------------------------------------------
+      # The source collapses power, activity and health into ONE enum. The
+      # canonical model keeps them as three ORTHOGONAL axes, because they are
+      # genuinely independent: an asset can be powered on, in an active mode,
+      # AND degraded — simultaneously. A combined enum cannot express that
+      # without a cross-product explosion.
+      #
+      # Read the three match blocks as three independent questions asked of
+      # the same input:
+      #
+      #     POWER  — is it energised at all?
+      #     MODE   — what is it doing right now?
+      #     HEALTH — is it nominal or impaired?
+      #
+      # A different source with a different combined vocabulary writes its own
+      # three match blocks. The Silver shape never changes — which is what lets
+      # the UI, fusion and rollups stay source-agnostic.
+
+      # --- axis 1: power ---------------------------------------------------
+      root.operational_state.power_state = match this.mode {
+        this == "OFF"            => "POWER_STATE_OFF",
+        this == "STARTING"       => "POWER_STATE_STARTING",
+        this == "SHUTTING_DOWN"  => "POWER_STATE_SHUTTING_DOWN",
+        this == "MAINTENANCE"    => "POWER_STATE_MAINTENANCE",
+        _                        => "POWER_STATE_ON"
+      }
+
+      # --- axis 2: functional mode -----------------------------------------
+      # NOTE the deliberate asymmetry: DEGRADED and FAULT say nothing about
+      # WHAT the sensor is doing, only about how well. They therefore map to
+      # ACTIVE here and carry their signal on the health axis. Folding them
+      # into mode would lose the distinction between "impaired but working"
+      # and "idle".
+      root.operational_state.functional_mode = match this.mode {
+        this == "OFF"            => "FUNCTIONAL_MODE_UNSPECIFIED",
+        this == "STANDBY"        => "FUNCTIONAL_MODE_STANDBY",
+        this == "ACTIVE_RX_ONLY" => "FUNCTIONAL_MODE_RECEIVE_ONLY",
+        this == "ACTIVE_TX_ONLY" => "FUNCTIONAL_MODE_TRANSMIT_ONLY",
+        this == "MAINTENANCE"    => "FUNCTIONAL_MODE_MAINTENANCE",
+        _                        => "FUNCTIONAL_MODE_ACTIVE"
+      }
+
+      # --- axis 3: health ---------------------------------------------------
+      root.operational_state.health_state = match this.mode {
+        this == "DEGRADED" => "HEALTH_STATE_DEGRADED",
+        this == "FAULT"    => "HEALTH_STATE_FAULT",
+        _                  => "HEALTH_STATE_NOMINAL"
+      }
+
+      # --- discrete activity cues -------------------------------------------
+      # Separate booleans rather than more enum values: "is the RX path live"
+      # is a different question from "what mode is it in", and consumers ask
+      # them independently.
+      root.operational_state.actively_receiving = match this.mode {
+        this == "OFF" || this == "STANDBY" || this == "ACTIVE_TX_ONLY" ||
+        this == "SHUTTING_DOWN" || this == "MAINTENANCE" => false,
+        _ => true
+      }
+      root.operational_state.actively_transmitting = match this.mode {
+        this == "OFF" || this == "STANDBY" || this == "ACTIVE_RX_ONLY" ||
+        this == "SHUTTING_DOWN" || this == "MAINTENANCE" => false,
+        _ => true
+      }
+
+      # ---------------------------------------------------------------------
+      # 5. PROVENANCE — ADR-0022 / ADR-0023 / ADR-0029
+      # ---------------------------------------------------------------------
+      root.provenance.producer_id      = "sample-sensor-adapter"
+      root.provenance.source_protocol  = "sample/amqp-json"
+      root.provenance.source_sequence  = this.sequence | 0
+      root.provenance.sample_time      = this.reported_at
+
+      # Releasability labels (ADR-0029). originator_nation is parsed from the
+      # sample deployment's id convention (<NATION>_<SITE>_...). A deployment
+      # whose ids do NOT encode nationality needs a real mapping source; the
+      # config default is honest about being a default, not a derivation.
+      root.provenance.originator_nation = this.sensor_id.split("_").index(0) | "UNKNOWN"
+      root.provenance.releasable_to     = this.releasable_to | []
+
+      # ---------------------------------------------------------------------
+      # 6. WHAT WE DELIBERATELY DO NOT MAP
+      # ---------------------------------------------------------------------
+      # subsystems[] is carried to Bronze but not interpreted here. Turning
+      # subsystem health into severity is fusion's job (ADR-0020 / ADR-0026
+      # constraining factors), not the mapping's. A mapping that computes
+      # severity has started doing algorithms — the same boundary violation
+      # as converting units.

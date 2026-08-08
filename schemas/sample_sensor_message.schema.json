@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openddil.example/schemas/sample_sensor_message.schema.json",
+  "title": "SampleSensorMessage",
+
+  "$comment": "PROVENANCE — READ BEFORE USING THIS AS A MODEL. This schema is AUTHORED FICTION. It was written for this sample overlay and is DEFINITIVE for the fictional deployment it describes; there is no external system it approximates. It demonstrates the ingress-mapping pattern (ADR-0030 Stage 2) and it does NOT attest that any real-world schema has been validated, reverse-engineered, or agreed with any producer. The distinction matters because a REAL overlay's wire schema is usually the opposite provenance class: a RECONSTRUCTION inferred from observed traffic or producer code because no contract or ICD was supplied — weak provenance, real referent. This specimen is strong provenance, fictional referent. It is more authoritative than a real overlay's schema, about far less. Do not infer from this file's confidence that a real deployment's schema carries equivalent authority; that inference is exactly backwards. See PRINCIPLES.md 'Claims vs. sources' and overlay-manifest.yaml class 'wire-schemas'.",
+
+  "description": "Native wire shape of the fictional SENTRY-series ground sensor used by the sample deployment. Consumed from AMQP and mapped to the OpenDDIL Silver ontology by dynamic-mappings/sample-sensor-mapping.yaml. All identifiers, sites, nations and platform names herein are invented.",
+
+  "type": "object",
+  "required": ["sensor_id", "platform_type", "reported_at", "mode"],
+  "additionalProperties": true,
+
+  "properties": {
+    "sensor_id": {
+      "type": "string",
+      "description": "Native sensor identity. The sample deployment's convention encodes originating nation and site as underscore-delimited leading segments: <NATION>_<SITE>_<SYSTEM>_<ROLE>. The mapping parses the nation prefix to stamp Provenance.originator_nation (ADR-0029). Nations here are FICTIONAL.",
+      "examples": [
+        "ATL_NORTHPOINT_SENTRY1_Radar",
+        "BDR_CAPEVERDANT_SENTRY2_Radar",
+        "SYL_HIGHMOOR_SENTRY1_Radar"
+      ]
+    },
+
+    "callsign": {
+      "type": "string",
+      "description": "Optional human-facing label.",
+      "examples": ["WATCHTOWER-01"]
+    },
+
+    "platform_type": {
+      "type": "string",
+      "description": "Native platform designation. Aliased to a canonical OpenDDIL platform_variant via ontology/platform_variant_aliases.yaml (ADR-0016) — the mapping never hardcodes the translation.",
+      "examples": ["SENTRY_MK3", "SENTRY_MK3_EXT"]
+    },
+
+    "reported_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Source sample time, RFC3339."
+    },
+
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic source sequence. Enables drop detection downstream."
+    },
+
+    "position": {
+      "type": "object",
+      "description": "Geodetic position. Units are the SOURCE's native units and are carried verbatim as Quantity — no conversion in the mapping (ADR-0013).",
+      "required": ["lat_deg", "lon_deg"],
+      "properties": {
+        "lat_deg": { "type": "number", "minimum": -90, "maximum": 90 },
+        "lon_deg": { "type": "number", "minimum": -180, "maximum": 180 },
+        "alt_m":   { "type": "number", "description": "Metres above ellipsoid." }
+      }
+    },
+
+    "mode": {
+      "type": "string",
+      "description": "COMBINED state enum — the pedagogically important field. The source collapses power, activity and health into ONE value, which is exactly the shape ADR-0026 exists to decompose. The mapping expands it into three orthogonal axes (PowerState x FunctionalMode x HealthState) plus discrete RX/TX cues. A future source with a different combined vocabulary changes only its own mapping; the Silver shape is unchanged.",
+      "enum": [
+        "OFF",
+        "STARTING",
+        "STANDBY",
+        "ACTIVE",
+        "ACTIVE_RX_ONLY",
+        "ACTIVE_TX_ONLY",
+        "DEGRADED",
+        "FAULT",
+        "MAINTENANCE",
+        "SHUTTING_DOWN"
+      ]
+    },
+
+    "releasable_to": {
+      "type": "array",
+      "description": "Nations this asset's data may be released to (ADR-0029). FICTIONAL nation codes. Absent means 'originator only'.",
+      "items": { "type": "string" },
+      "examples": [["BDR", "SYL"]]
+    },
+
+    "subsystems": {
+      "type": "array",
+      "description": "Optional per-subsystem health. Mapped to constraining factors downstream, not interpreted here.",
+      "items": {
+        "type": "object",
+        "required": ["subsystem_id", "health"],
+        "properties": {
+          "subsystem_id": { "type": "string", "examples": ["TRANSMITTER", "COOLING", "PROCESSOR"] },
+          "health": { "type": "string", "enum": ["OPERATIONAL", "DEGRADED", "INOPERATIVE"] }
+        }
+      }
+    }
+  }
+}

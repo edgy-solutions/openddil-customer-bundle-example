@@ -111,6 +111,7 @@ classes:
     path: baselines/
     required: true
     status: MISSING
+    travels_with: phase-3
     notes: >
       Load-bearing, not decoration: a tier's cm-service produces meaningless
       output without baselines mounted. Discovered by the Arc 1 Phase 3 gate.
@@ -121,12 +122,31 @@ classes:
       unit references. What a mapping is authored against.
     path: schemas/
     required: false
-    status: MISSING
+    status: present
     notes: >
-      Provenance discipline applies hard here (PRINCIPLES §Claims vs.
-      sources): a schema reconstructed by inference is not a contract, and a
-      public twin must not model one as if it were. Label the specimen's
-      provenance explicitly.
+      PROVENANCE CLASS FLIPS BETWEEN A REAL OVERLAY AND THIS TWIN, and the
+      specimen must say which class it is.
+
+      A real overlay's schema is typically a RECONSTRUCTION — inferred from
+      observed traffic or from a producer's code because no contract or ICD
+      was supplied. Weak provenance, real referent: it describes someone
+      else's truth, imperfectly.
+
+      This bundle's schema is AUTHORED FICTION — strong provenance,
+      fictional referent. We wrote it, so it is fully definitive for the
+      sample deployment it describes, and attests nothing whatsoever about
+      any real-world system.
+
+      Note the inversion: the twin is MORE authoritative than the original,
+      about LESS. So the specimen's header must make two claims, not one:
+        1. "Authored for the sample deployment; definitive for it."
+        2. "Demonstrates the mapping pattern. Does NOT attest that any
+            real-world schema was validated."
+
+      Stating only "this is a sample" would launder the distinction —
+      readers would infer that real overlays' schemas carry the same
+      authority this one does, which is exactly backwards
+      (PRINCIPLES §Claims vs. sources).
 
   - id: chart-overlay
     purpose: >
@@ -135,6 +155,7 @@ classes:
     path: chart/
     required: false
     status: MISSING
+    travels_with: phase-3
 
   - id: deployment-manifests
     purpose: >
@@ -143,6 +164,7 @@ classes:
     path: k8s/
     required: false
     status: MISSING
+    travels_with: phase-3
 
   - id: mapping-unit-tests
     purpose: >
@@ -151,6 +173,7 @@ classes:
     path: tests/bloblang/
     required: false
     status: MISSING
+    travels_with: repoint-motion
 
   # --- prospective ------------------------------------------------------------
   # Classes the architecture has designated but which do not exist in any
