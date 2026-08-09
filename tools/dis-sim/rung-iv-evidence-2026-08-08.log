@@ -1,0 +1,29 @@
+===================================================================================
+ RUNG (iv) — buffer and drain, measured at the broker    2026-08-09T03:52:40Z
+ REAL-LAG  = rpk group describe bridge-group-edge-northpoint  (TOTAL-LAG)
+ monitor   = edge_buffer_status, what the runbook currently says to watch
+===================================================================================
+
+--- BASELINE (link up) ---
+baseline       | 03:52:40 | REAL-LAG=2      monitor(lag/severed)=2/false      tier_newest=03:52:40
+baseline       | 03:52:56 | REAL-LAG=2      monitor(lag/severed)=0/false      tier_newest=03:52:56
+
+--- SEVER ---
+  POST enabled:false -> HTTP 200
+severed+20s    | 03:53:16 | REAL-LAG=32     monitor(lag/severed)=30/true      tier_newest=03:53:16
+severed+40s    | 03:53:37 | REAL-LAG=66     monitor(lag/severed)=65/true      tier_newest=03:53:37
+severed+60s    | 03:53:57 | REAL-LAG=99     monitor(lag/severed)=97/true      tier_newest=03:53:58
+severed+80s    | 03:54:18 | REAL-LAG=132    monitor(lag/severed)=130/true     tier_newest=03:54:18
+severed+100s   | 03:54:39 | REAL-LAG=165    monitor(lag/severed)=165/true     tier_newest=03:54:39
+
+--- HEAL ---
+  POST enabled:true -> HTTP 200
+healed+20s     | 03:54:59 | REAL-LAG=1      monitor(lag/severed)=2/false      tier_newest=03:55:00
+healed+40s     | 03:55:20 | REAL-LAG=1      monitor(lag/severed)=2/false      tier_newest=03:55:20
+healed+60s     | 03:55:41 | REAL-LAG=1      monitor(lag/severed)=0/false      tier_newest=03:55:41
+healed+80s     | 03:56:01 | REAL-LAG=1      monitor(lag/severed)=1/false      tier_newest=03:56:01
+healed+100s    | 03:56:22 | REAL-LAG=1      monitor(lag/severed)=1/false      tier_newest=03:56:22
+
+===================================================================================
+ END 2026-08-09T03:56:23Z
+===================================================================================

@@ -1,0 +1,146 @@
+# =============================================================================
+# dis-sim — DIS EntityState PDU generator, one per edge
+# =============================================================================
+# Deploys the generator alongside the stack so the pipeline has a real front
+# door source. See ../dis_sim.py for what this is and — more importantly —
+# what it is not (it is not a simulation).
+#
+# The script is mounted from a ConfigMap rather than baked into an image, so
+# there is nothing to build or push. `../deploy.sh` creates that ConfigMap
+# from the single source file, which keeps one copy of the generator rather
+# than a file and a manifest that drift.
+#
+# opendis is pip-installed at container start. That costs a few seconds on
+# each restart and buys not maintaining a registry for a test fixture. Pin
+# the version — it must match what sensor-ingest DECODES with, which is the
+# whole reason wire compatibility is true by construction here.
+#
+# TARGETING: one Deployment per edge, each pointed at that edge's
+# sensor-ingest Service. Severing one edge's uplink (rung iii) then leaves
+# the other producing normally, which is what makes the contrast visible.
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dis-sim-edge-northpoint
+  labels:
+    app.kubernetes.io/name: dis-sim
+    app.kubernetes.io/component: dis-sim-edge-northpoint
+    app.kubernetes.io/part-of: openddil
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: dis-sim-edge-northpoint
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dis-sim
+        app.kubernetes.io/component: dis-sim-edge-northpoint
+        app.kubernetes.io/part-of: openddil
+    spec:
+      containers:
+        - name: dis-sim
+          image: python:3.11-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              pip install --quiet --no-cache-dir opendis==1.0
+              exec python /src/dis_sim.py
+          env:
+            - name: DIS_TARGET_HOST
+              value: openddil-sensor-ingest-edge-northpoint
+            - name: DIS_TARGET_PORT
+              value: "62040"
+            - name: DIS_ENTITIES
+              value: "8"
+            # ~5s heartbeat mirrors a typical CGF default, and exercises
+            # fusion's gone-quiet staleness detection at a realistic cadence.
+            # A tight loop would flood the buffer and prove less.
+            - name: DIS_INTERVAL_S
+              value: "5.0"
+            - name: DIS_EXERCISE_ID
+              value: "1"
+            - name: DIS_PROTOCOL_VERSION
+              value: "7"
+            - name: DIS_SITE_ID
+              value: "1"
+            - name: DIS_APP_ID
+              value: "1"
+            # Distinct seed per edge so the two sites do not emit identical
+            # entity ids — they would collide in the asset registry.
+            - name: DIS_SEED
+              value: "1337"
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits:   { cpu: 200m, memory: 256Mi }
+          volumeMounts:
+            - name: src
+              mountPath: /src
+      volumes:
+        - name: src
+          configMap:
+            name: dis-sim-src
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dis-sim-edge-capeverdant
+  labels:
+    app.kubernetes.io/name: dis-sim
+    app.kubernetes.io/component: dis-sim-edge-capeverdant
+    app.kubernetes.io/part-of: openddil
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: dis-sim-edge-capeverdant
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dis-sim
+        app.kubernetes.io/component: dis-sim-edge-capeverdant
+        app.kubernetes.io/part-of: openddil
+    spec:
+      containers:
+        - name: dis-sim
+          image: python:3.11-slim
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              pip install --quiet --no-cache-dir opendis==1.0
+              exec python /src/dis_sim.py
+          env:
+            - name: DIS_TARGET_HOST
+              value: openddil-sensor-ingest-edge-capeverdant
+            - name: DIS_TARGET_PORT
+              value: "62041"
+            - name: DIS_ENTITIES
+              value: "6"
+            - name: DIS_INTERVAL_S
+              value: "5.0"
+            - name: DIS_EXERCISE_ID
+              value: "1"
+            - name: DIS_PROTOCOL_VERSION
+              value: "7"
+            # Distinct DIS site id AND seed: entity_id_urn is
+            # dis:{site}:{app}:{entity}, so two edges sharing a site id would
+            # produce colliding asset ids for different physical entities.
+            - name: DIS_SITE_ID
+              value: "2"
+            - name: DIS_APP_ID
+              value: "1"
+            - name: DIS_SEED
+              value: "4242"
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits:   { cpu: 200m, memory: 256Mi }
+          volumeMounts:
+            - name: src
+              mountPath: /src
+      volumes:
+        - name: src
+          configMap:
+            name: dis-sim-src
