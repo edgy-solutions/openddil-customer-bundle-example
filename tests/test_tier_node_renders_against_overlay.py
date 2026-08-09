@@ -169,3 +169,107 @@ def test_restate_partitions_pinned_at_the_measured_tier_profile(rendered):
     assert '"6"' in rendered or "'6'" in rendered, (
         "tier Restate partition count is not pinned to the measured profile"
     )
+
+
+# ---------------------------------------------------------------------------
+# Structural audit — PARSED, not substring-matched.
+#
+# `test_every_declared_component_actually_renders` above asserts each component
+# NAME appears in the rendered text. That is necessary and insufficient, and
+# the gap is not theoretical: a missing `---` at the tier loop boundary
+# concatenated tier N's last object with tier N+1's first into a single YAML
+# document. Duplicate top-level keys resolve last-wins, so the first object was
+# silently discarded — while its text remained fully present in the render.
+# Every substring assertion still passed. Observed as 3 topaz Services against
+# 1 topaz Deployment; the two tiers that lost it got a Service with no
+# endpoints, i.e. no local authorizer.
+#
+# The lesson generalises past this one bug: assertions about what a cluster
+# will RECEIVE must be made against parsed objects, because the unit the
+# cluster consumes is the document, not the byte range.
+# ---------------------------------------------------------------------------
+
+# Each component and the kind it must produce, once per tier. Exact names are
+# built rather than substring-matched because `tier-restate` is a prefix of
+# both `tier-restate-config` and `tier-restate-bootstrap`.
+POD_BEARING = {
+    "tier-pg": "StatefulSet",
+    "tier-restate": "StatefulSet",
+    "tier-projector": "Deployment",
+    "tier-fusion": "Deployment",
+    "tier-cm": "Deployment",
+    "tier-electric": "Deployment",
+    "tier-frontend": "Deployment",
+    "tier-topaz": "Deployment",
+    "tier-schema-init": "Job",
+    "tier-restate-bootstrap": "Job",
+}
+
+# `helm template CHART` with no explicit release name uses this default.
+RELEASE = "release-name"
+
+
+def _tier_ids() -> list[str]:
+    """Tiers the fixture should produce a node for.
+
+    Mirrors the template's own gate: range over `edges`, filtered by
+    `tierNode.tiers` when that list is non-empty.
+    """
+    values = yaml.safe_load(VALUES.read_text(encoding="utf-8")) or {}
+    edges = [e["id"] for e in (values.get("edges") or []) if e.get("id")]
+    selected = (values.get("tierNode") or {}).get("tiers") or []
+    return [e for e in edges if e in selected] if selected else edges
+
+
+@pytest.fixture(scope="module")
+def parsed(rendered) -> list[dict]:
+    docs = [d for d in yaml.safe_load_all(rendered) if isinstance(d, dict)]
+    assert docs, "render parsed to zero documents"
+    return docs
+
+
+@pytest.mark.parametrize("component,kind", sorted(POD_BEARING.items()))
+def test_every_tier_gets_its_own_object(parsed, component, kind):
+    """One object of the right kind per tier — counted, not grepped."""
+    tiers = _tier_ids()
+    assert tiers, "fixture defines no tiers; the rest of this test is vacuous"
+
+    by_name = {
+        d.get("metadata", {}).get("name"): d.get("kind")
+        for d in parsed
+        if d.get("metadata", {}).get("name")
+    }
+    missing = [
+        f"{RELEASE}-{component}-{t}"
+        for t in tiers
+        if by_name.get(f"{RELEASE}-{component}-{t}") != kind
+    ]
+    assert not missing, (
+        f"{component}: expected a {kind} for each of {len(tiers)} tiers, but "
+        f"these are absent or of the wrong kind after parsing: {missing}. "
+        f"If the name appears in `helm template` output but fails here, the "
+        f"object was merged into a neighbouring YAML document and discarded — "
+        f"check for a missing `---` separator."
+    )
+
+
+def test_no_two_objects_share_a_yaml_document(rendered):
+    """Each object gets its own document.
+
+    Direct guard on the separator bug, independent of any component list, so a
+    component added later is covered without touching this file.
+    """
+    offenders: list[str] = []
+    seen_in_doc = None
+    for lineno, line in enumerate(rendered.splitlines(), start=1):
+        if line.strip() == "---":
+            seen_in_doc = None
+        elif line.startswith("apiVersion:"):
+            if seen_in_doc is not None:
+                offenders.append(f"line {lineno} (previous object at line {seen_in_doc})")
+            seen_in_doc = lineno
+
+    assert not offenders, (
+        "two objects share one YAML document, so the first is silently "
+        "discarded by last-wins key resolution: " + "; ".join(offenders)
+    )
