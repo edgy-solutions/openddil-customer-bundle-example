@@ -72,8 +72,20 @@ tierNode:
     useEmptyDir: true
 
   topaz:
-    # Deployed, healthy, deciding nothing — Arc 2's landing zone.
-    enabled: true
+    # Arc 2's landing zone — RESERVED, not occupied.
+    #
+    # This fixture previously claimed "deployed, healthy, deciding nothing"
+    # and set enabled: true. Neither half held: a missing YAML separator in
+    # tier-node.yaml discarded the Deployment for every tier but the last, so
+    # it was never deployed; and when the separator was fixed and it finally
+    # rendered, it exited immediately with
+    #   required flag(s) "config-file" not set
+    # `args: ["run"]` is not a runnable topaz. Turning it on requires a config
+    # ConfigMap, a --config-file argument and a pinned image tag — Arc 2 work.
+    #
+    # Left explicitly false so this fixture describes something that actually
+    # deploys. A fixture that does not work is not a fixture.
+    enabled: false
 
 # --- Sample overlay wiring --------------------------------------------------
 # The sample deployment's own artifacts. Paths are relative to the overlay

@@ -114,7 +114,14 @@ def test_every_declared_component_actually_renders(rendered, component):
     `helm template` exiting zero proves the render RAN. It does not prove the
     render produced what the template's header claims. This asserts each
     named component appears in the output by name.
+
+    NOTE: name-presence is necessary and NOT sufficient — see
+    `test_every_tier_gets_its_own_object`, which parses. This check survived a
+    real defect that it could not see.
     """
+    if component == "tier-topaz" and not _topaz_enabled():
+        pytest.skip("tierNode.topaz.enabled is false in this fixture "
+                    "(Arc 2 reserved seat; needs a config file to run)")
     assert f"{component}-edge-northpoint" in rendered, (
         f"component {component!r} is named in the tier-node template's header "
         f"but does not appear in the rendered output. Exit-zero proved the "
@@ -209,6 +216,19 @@ POD_BEARING = {
 RELEASE = "release-name"
 
 
+def _topaz_enabled() -> bool:
+    """Whether THIS fixture asks for the per-tier authorizer.
+
+    Read rather than assumed: topaz is Arc 2's reserved seat and currently
+    ships disabled, because `args: ["run"]` alone is not a runnable topaz
+    (it exits on a missing --config-file). Hardcoding either answer here
+    would make this suite disagree with the fixture it exists to validate.
+    """
+    values = yaml.safe_load(VALUES.read_text(encoding="utf-8")) or {}
+    topaz = ((values.get("tierNode") or {}).get("topaz") or {})
+    return bool(topaz.get("enabled", False))
+
+
 def _tier_ids() -> list[str]:
     """Tiers the fixture should produce a node for.
 
@@ -231,6 +251,9 @@ def parsed(rendered) -> list[dict]:
 @pytest.mark.parametrize("component,kind", sorted(POD_BEARING.items()))
 def test_every_tier_gets_its_own_object(parsed, component, kind):
     """One object of the right kind per tier — counted, not grepped."""
+    if component == "tier-topaz" and not _topaz_enabled():
+        pytest.skip("tierNode.topaz.enabled is false in this fixture "
+                    "(Arc 2 reserved seat; needs a config file to run)")
     tiers = _tier_ids()
     assert tiers, "fixture defines no tiers; the rest of this test is vacuous"
 
