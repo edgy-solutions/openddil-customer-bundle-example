@@ -72,20 +72,22 @@ tierNode:
     useEmptyDir: true
 
   topaz:
-    # Arc 2's landing zone — RESERVED, not occupied.
+    # Arc 2's landing zone — now genuinely OCCUPIED, and the claim is earned.
     #
-    # This fixture previously claimed "deployed, healthy, deciding nothing"
-    # and set enabled: true. Neither half held: a missing YAML separator in
-    # tier-node.yaml discarded the Deployment for every tier but the last, so
-    # it was never deployed; and when the separator was fixed and it finally
-    # rendered, it exited immediately with
-    #   required flag(s) "config-file" not set
-    # `args: ["run"]` is not a runnable topaz. Turning it on requires a config
-    # ConfigMap, a --config-file argument and a pinned image tag — Arc 2 work.
+    # This fixture has said "deployed, healthy, deciding nothing" twice
+    # without it being true: first while a missing YAML separator discarded
+    # the Deployment entirely, then while `args: ["run"]` exited on a missing
+    # --config-file. Chart 0.1.43 carries the invocation proven by running it
+    # (topazd 0.33.16): starts, serves, and answers real decisions against a
+    # local bundle — verified 4/4 including default-deny.
     #
-    # Left explicitly false so this fixture describes something that actually
-    # deploys. A fixture that does not work is not a fixture.
-    enabled: false
+    # It ships with an EMPTY bundle, so "deciding nothing" is now a property
+    # rather than an aspiration.
+    #
+    # STILL OPEN: decision logging is not configured — the config keys for it
+    # in the published docs are rejected by this build. ADR-0029's
+    # auditability requirement is an Arc 2 item.
+    enabled: true
 
 # --- Sample overlay wiring --------------------------------------------------
 # The sample deployment's own artifacts. Paths are relative to the overlay
