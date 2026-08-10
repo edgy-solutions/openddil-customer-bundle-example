@@ -1,0 +1,36 @@
+{
+  "asset": {
+    "asset_id": "sample:ATL_NORTHPOINT_S09",
+    "callsign": "WATCHTOWER-9",
+    "platform_variant": "SENTRY_MK9_PROTO"
+  },
+  "kinematics": {
+    "position": {
+      "wgs84": {
+        "alt": {
+          "unit": "m",
+          "value": 1720
+        },
+        "lat": 39.4,
+        "lon": -105.5
+      }
+    }
+  },
+  "operational_state": {
+    "actively_receiving": false,
+    "actively_transmitting": false,
+    "functional_mode": "FUNCTIONAL_MODE_STANDBY",
+    "health_state": "HEALTH_STATE_NOMINAL",
+    "power_state": "POWER_STATE_ON"
+  },
+  "provenance": {
+    "originator_nation": "ATL",
+    "producer_id": "sample-sensor-adapter",
+    "releasable_to": [
+      "ATL"
+    ],
+    "sample_time": "2026-08-09T04:00:25Z",
+    "source_protocol": "sample/amqp-json",
+    "source_sequence": 44
+  }
+}

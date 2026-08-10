@@ -1,0 +1,4 @@
+THE CENTREPIECE (ADR-0026). DEGRADED must yield power ON, mode ACTIVE,
+health DEGRADED, and both activity booleans TRUE. It is the deliberate
+asymmetry the mapping documents: impaired-but-working is not idle. If a
+future edit folds DEGRADED into functional_mode, this case fails.

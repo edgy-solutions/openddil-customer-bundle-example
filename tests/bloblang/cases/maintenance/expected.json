@@ -1,0 +1,36 @@
+{
+  "asset": {
+    "asset_id": "sample:SYL_HIGHLAND_S01",
+    "callsign": "KEEP-1",
+    "platform_variant": "MRAD_Sensor"
+  },
+  "kinematics": {
+    "position": {
+      "wgs84": {
+        "alt": {
+          "unit": "m",
+          "value": 1600
+        },
+        "lat": 39.0,
+        "lon": -105.1
+      }
+    }
+  },
+  "operational_state": {
+    "actively_receiving": false,
+    "actively_transmitting": false,
+    "functional_mode": "FUNCTIONAL_MODE_MAINTENANCE",
+    "health_state": "HEALTH_STATE_NOMINAL",
+    "power_state": "POWER_STATE_MAINTENANCE"
+  },
+  "provenance": {
+    "originator_nation": "SYL",
+    "producer_id": "sample-sensor-adapter",
+    "releasable_to": [
+      "SYL"
+    ],
+    "sample_time": "2026-08-09T04:00:20Z",
+    "source_protocol": "sample/amqp-json",
+    "source_sequence": 9
+  }
+}

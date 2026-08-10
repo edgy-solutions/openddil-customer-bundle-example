@@ -1,0 +1,4 @@
+ADR-0016 passthrough-on-miss: an unaliased platform_type flows through
+UNCHANGED rather than the mapping inventing a canonical name. The
+ontology-drift check is what flags it downstream. This pins the mapping NOT
+doing something.

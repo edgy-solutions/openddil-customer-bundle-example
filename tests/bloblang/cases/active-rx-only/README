@@ -1,0 +1,3 @@
+Pins the activity booleans apart: receiving true, transmitting false. These
+are separate questions from functional_mode and a consumer asks them
+independently.

@@ -182,9 +182,33 @@ classes:
       end-to-end integration tests.
     path: tests/bloblang/
     required: false
-    status: MISSING
+    status: present
     travels_with: post-pilot
     notes: >
+      LANDED 2026-08-09. Six golden cases over sample-sensor-mapping.yaml,
+      run by tests/bloblang/run.sh and wired into CI
+      (.github/workflows/bloblang-golden.yml). Fetches one pinned binary,
+      pipes JSON through it, diffs — no broker, no daemon, no containers,
+      which is why it can run on every push where the integration suite
+      cannot.
+
+      Cases were chosen to pin the decompositions that would otherwise break
+      SILENTLY: the ADR-0026 three-axis split (DEGRADED and FAULT carry on
+      the health axis while functional_mode stays ACTIVE — the deliberate
+      asymmetry), the activity booleans as questions separate from mode, and
+      the ADR-0016 passthrough-on-miss, which pins the mapping NOT inventing
+      a canonical variant name.
+
+      Goldens were generated and then READ against the mapping's documented
+      rules before committing. A golden accepted unread records current
+      behaviour as though it were intent, which inverts the purpose of the
+      suite.
+
+      Safe to golden-file because this mapping is fully deterministic — every
+      output derives from an input field; it generates no uuid and reads no
+      clock. A mapping doing either needs those fields masked, and that
+      masking has to be justified per mapping rather than assumed.
+
       RE-SCOPED 2026-08-08 after verifying the pinned engine rather than
       assuming it.
 

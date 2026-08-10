@@ -1,0 +1,36 @@
+{
+  "asset": {
+    "asset_id": "sample:BDR_CAPEVERDANT_S01",
+    "callsign": "",
+    "platform_variant": "MRAD_ADVANCED_Sensor"
+  },
+  "kinematics": {
+    "position": {
+      "wgs84": {
+        "alt": {
+          "unit": "m",
+          "value": 1580
+        },
+        "lat": 38.9,
+        "lon": -105.0
+      }
+    }
+  },
+  "operational_state": {
+    "actively_receiving": true,
+    "actively_transmitting": true,
+    "functional_mode": "FUNCTIONAL_MODE_ACTIVE",
+    "health_state": "HEALTH_STATE_FAULT",
+    "power_state": "POWER_STATE_ON"
+  },
+  "provenance": {
+    "originator_nation": "BDR",
+    "producer_id": "sample-sensor-adapter",
+    "releasable_to": [
+      "BDR"
+    ],
+    "sample_time": "2026-08-09T04:00:10Z",
+    "source_protocol": "sample/amqp-json",
+    "source_sequence": 7
+  }
+}

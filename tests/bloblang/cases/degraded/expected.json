@@ -1,0 +1,37 @@
+{
+  "asset": {
+    "asset_id": "sample:ATL_NORTHPOINT_S02",
+    "callsign": "WATCHTOWER-2",
+    "platform_variant": "MRAD_Sensor"
+  },
+  "kinematics": {
+    "position": {
+      "wgs84": {
+        "alt": {
+          "unit": "m",
+          "value": 1650
+        },
+        "lat": 39.2,
+        "lon": -105.3
+      }
+    }
+  },
+  "operational_state": {
+    "actively_receiving": true,
+    "actively_transmitting": true,
+    "functional_mode": "FUNCTIONAL_MODE_ACTIVE",
+    "health_state": "HEALTH_STATE_DEGRADED",
+    "power_state": "POWER_STATE_ON"
+  },
+  "provenance": {
+    "originator_nation": "ATL",
+    "producer_id": "sample-sensor-adapter",
+    "releasable_to": [
+      "ATL",
+      "BDR"
+    ],
+    "sample_time": "2026-08-09T04:00:05Z",
+    "source_protocol": "sample/amqp-json",
+    "source_sequence": 42
+  }
+}

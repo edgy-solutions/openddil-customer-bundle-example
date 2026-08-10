@@ -1,0 +1,3 @@
+FAULT carries on the health axis only, exactly like DEGRADED — mode stays
+ACTIVE. Also covers the EXT variant alias and an absent callsign (the `| ""`
+fallback).

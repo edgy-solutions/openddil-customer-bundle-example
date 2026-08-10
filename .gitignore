@@ -49,3 +49,4 @@ Thumbs.db
 # Local-only IDE / MCP config (not for OSS distribution)
 .mcp.json
 .claude/
+tests/bloblang/.bin/

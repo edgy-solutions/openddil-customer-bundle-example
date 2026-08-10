@@ -1,0 +1,30 @@
+# Golden-file harness — runs ONE mapping over stdin and prints the result.
+#
+# Deliberately minimal: stdin -> the mapping under test -> stdout. No broker,
+# no schema registry, no network. The mapping resource file is supplied with
+# `-r` at run time, so this harness is mapping-agnostic and the same file
+# tests every mapping the overlay ships.
+#
+# WHY GOLDEN FILES AND NOT `connect test`:
+# Redpanda Connect's `test` subcommand was verified NOT to exist in the
+# pinned distribution — checked, not assumed. Golden-file diffing needs
+# nothing but the binary itself.
+#
+# WHY THIS MAPPING IS SAFE TO GOLDEN-FILE:
+# sample-sensor-mapping.yaml is fully deterministic — every output field
+# derives from an input field. It generates no uuid, reads no clock. A
+# mapping that did either would need those fields masked before diffing, and
+# that masking would have to be written and justified per mapping rather than
+# assumed.
+
+input:
+  stdin:
+    codec: lines
+
+pipeline:
+  processors:
+    - resource: sample_sensor_mapping
+
+output:
+  stdout:
+    codec: lines

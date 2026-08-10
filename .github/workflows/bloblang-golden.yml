@@ -1,0 +1,58 @@
+name: Bloblang golden files
+
+# Runs the overlay's ingress mappings against committed input/output pairs.
+#
+# This is the `mapping-unit-tests` artifact class the overlay manifest
+# declares — Bloblang-level checks, distinct from the end-to-end integration
+# tests that need a live Docker daemon.
+#
+# CHEAP BY CONSTRUCTION: fetches one binary, pipes JSON through it, diffs.
+# No broker, no daemon, no containers. That is the whole reason this can run
+# on every push where the integration suite cannot.
+#
+# Redpanda Connect's `test` subcommand was verified NOT to exist in the
+# pinned distribution, so golden-file diffing is the mechanism rather than a
+# fallback.
+
+on:
+  push:
+    branches: [ "master" ]
+    paths:
+      - "dynamic-mappings/**"
+      - "tests/bloblang/**"
+      - ".github/workflows/bloblang-golden.yml"
+  pull_request:
+    branches: [ "master" ]
+    paths:
+      - "dynamic-mappings/**"
+      - "tests/bloblang/**"
+      - ".github/workflows/bloblang-golden.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  golden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runner image ships python3; the harness uses it only to normalise
+      # key order before diffing, so a Connect upgrade that reorders keys
+      # reports as unchanged rather than as a regression.
+      - name: Run golden-file mappings
+        run: |
+          chmod +x tests/bloblang/run.sh
+          tests/bloblang/run.sh
+
+      # A suite that silently tests nothing is worse than no suite. If the
+      # cases directory is ever emptied or the runner stops finding it, fail
+      # loudly rather than reporting a vacuous pass.
+      - name: Assert the suite actually ran cases
+        run: |
+          n=$(find tests/bloblang/cases -mindepth 1 -maxdepth 1 -type d | wc -l)
+          echo "case directories: $n"
+          if [ "$n" -lt 1 ]; then
+            echo "no cases found — the suite would have passed vacuously" >&2
+            exit 1
+          fi

@@ -1,0 +1,1 @@
+{"sensor_id":"ATL_NORTHPOINT_S02","callsign":"WATCHTOWER-2","platform_type":"SENTRY_MK3","mode":"DEGRADED","position":{"lat_deg":39.2,"lon_deg":-105.3,"alt_m":1650},"sequence":42,"reported_at":"2026-08-09T04:00:05Z","releasable_to":["ATL","BDR"]}

@@ -1,0 +1,1 @@
+{"sensor_id":"BDR_CAPEVERDANT_S01","platform_type":"SENTRY_MK3_EXT","mode":"FAULT","position":{"lat_deg":38.9,"lon_deg":-105.0,"alt_m":1580},"sequence":7,"reported_at":"2026-08-09T04:00:10Z","releasable_to":["BDR"]}

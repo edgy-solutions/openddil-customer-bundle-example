@@ -1,0 +1,3 @@
+OFF is the axis-separation case that matters most: power OFF, mode
+UNSPECIFIED, health NOMINAL, and BOTH activity booleans false. A regression
+that folded power into mode would show up here first.
