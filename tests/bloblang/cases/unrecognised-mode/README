@@ -1,0 +1,26 @@
+THE HONEST-FAILURE CASE. `THERMAL_LIMITED` is deliberately NOT in the source
+schema's mode enum — it stands for the mode a future producer adds, or a
+typo, or a version skew between adapter and feed.
+
+What this pins is that the mapping REFUSES rather than answers:
+
+    power_state     POWER_STATE_UNSPECIFIED
+    functional_mode FUNCTIONAL_MODE_UNSPECIFIED
+    health_state    HEALTH_STATE_UNSPECIFIED
+    actively_receiving / actively_transmitting   ABSENT
+
+Before 2026-08-12 this input produced ON / ACTIVE / NOMINAL and both booleans
+true — a fully healthy, actively-operating sensor, asserted on the strength
+of not recognising its state. A safety-relevant false negative, and one that
+propagated: ADR-0030 designates this file as the specimen adapter authors
+copy, so the construction reproduced into every mapping written from it.
+
+The catch-alls were not deleted; they were EMPTIED. Every mode the schema
+declares is now listed explicitly and resolves exactly as it did before —
+the other six cases in this suite are the proof of that, and their goldens
+did not move when this fix landed. Only genuinely unrecognised input reaches
+the final branch.
+
+If someone later "simplifies" the match blocks back to a catch-all, the six
+declared-mode cases will all still pass. This is the ONLY case that fails.
+That is precisely why it exists.

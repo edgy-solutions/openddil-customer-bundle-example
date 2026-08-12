@@ -90,13 +90,39 @@ processor_resources:
       # three match blocks. The Silver shape never changes — which is what lets
       # the UI, fusion and rollups stay source-agnostic.
 
+      # --- ENUMERATE, DO NOT CATCH-ALL -------------------------------------
+      # Every branch below lists a mode the source schema DECLARES. The final
+      # `_` is reached only by a value the schema does not declare — a new
+      # mode, a typo, a version skew — and it yields UNSPECIFIED.
+      #
+      # This is the difference between a RESIDUAL CLASS and an UNRECOGNISED
+      # INPUT, and they are easy to conflate because they share syntax.
+      # "Everything else is powered on" is a real modelling decision about a
+      # nameable set. "Anything at all, including values that do not exist
+      # yet, is powered on and healthy" is not a decision — it is an
+      # assertion made on the basis of not understanding the input.
+      #
+      # The earlier form ended each axis with a catch-all, so an unknown mode
+      # resolved to POWER_ON / ACTIVE / NOMINAL: the system asserting an
+      # asset is healthy precisely because it failed to recognise its state.
+      # A false negative on the safety-relevant axis.
+      #
+      # Test: can you NAME what falls into this branch? If the answer is
+      # "anything", it is not a residual class.
+
       # --- axis 1: power ---------------------------------------------------
       root.operational_state.power_state = match this.mode {
         this == "OFF"            => "POWER_STATE_OFF",
         this == "STARTING"       => "POWER_STATE_STARTING",
         this == "SHUTTING_DOWN"  => "POWER_STATE_SHUTTING_DOWN",
         this == "MAINTENANCE"    => "POWER_STATE_MAINTENANCE",
-        _                        => "POWER_STATE_ON"
+        this == "STANDBY"        => "POWER_STATE_ON",
+        this == "ACTIVE"         => "POWER_STATE_ON",
+        this == "ACTIVE_RX_ONLY" => "POWER_STATE_ON",
+        this == "ACTIVE_TX_ONLY" => "POWER_STATE_ON",
+        this == "DEGRADED"       => "POWER_STATE_ON",
+        this == "FAULT"          => "POWER_STATE_ON",
+        _                        => "POWER_STATE_UNSPECIFIED"
       }
 
       # --- axis 2: functional mode -----------------------------------------
@@ -111,29 +137,64 @@ processor_resources:
         this == "ACTIVE_RX_ONLY" => "FUNCTIONAL_MODE_RECEIVE_ONLY",
         this == "ACTIVE_TX_ONLY" => "FUNCTIONAL_MODE_TRANSMIT_ONLY",
         this == "MAINTENANCE"    => "FUNCTIONAL_MODE_MAINTENANCE",
-        _                        => "FUNCTIONAL_MODE_ACTIVE"
+        this == "ACTIVE"         => "FUNCTIONAL_MODE_ACTIVE",
+        this == "DEGRADED"       => "FUNCTIONAL_MODE_ACTIVE",
+        this == "FAULT"          => "FUNCTIONAL_MODE_ACTIVE",
+        # STARTING and SHUTTING_DOWN resolved to ACTIVE under the previous
+        # catch-all. Preserved verbatim rather than corrected here — this
+        # change is about unrecognised input, not about re-deciding declared
+        # modes. Whether a starting or stopping sensor is meaningfully
+        # "ACTIVE" is a separate question, deliberately left open.
+        this == "STARTING"       => "FUNCTIONAL_MODE_ACTIVE",
+        this == "SHUTTING_DOWN"  => "FUNCTIONAL_MODE_ACTIVE",
+        _                        => "FUNCTIONAL_MODE_UNSPECIFIED"
       }
 
       # --- axis 3: health ---------------------------------------------------
+      # THE SAFETY-RELEVANT AXIS. An unrecognised mode must never resolve to
+      # NOMINAL: that is the system claiming an asset is healthy on the
+      # basis of not understanding it — a false negative on exactly the
+      # axis where false negatives matter (ADR-0036).
       root.operational_state.health_state = match this.mode {
-        this == "DEGRADED" => "HEALTH_STATE_DEGRADED",
-        this == "FAULT"    => "HEALTH_STATE_FAULT",
-        _                  => "HEALTH_STATE_NOMINAL"
+        this == "DEGRADED"       => "HEALTH_STATE_DEGRADED",
+        this == "FAULT"          => "HEALTH_STATE_FAULT",
+        this == "OFF"            => "HEALTH_STATE_NOMINAL",
+        this == "STARTING"       => "HEALTH_STATE_NOMINAL",
+        this == "STANDBY"        => "HEALTH_STATE_NOMINAL",
+        this == "ACTIVE"         => "HEALTH_STATE_NOMINAL",
+        this == "ACTIVE_RX_ONLY" => "HEALTH_STATE_NOMINAL",
+        this == "ACTIVE_TX_ONLY" => "HEALTH_STATE_NOMINAL",
+        this == "MAINTENANCE"    => "HEALTH_STATE_NOMINAL",
+        this == "SHUTTING_DOWN"  => "HEALTH_STATE_NOMINAL",
+        _                        => "HEALTH_STATE_UNSPECIFIED"
       }
 
       # --- discrete activity cues -------------------------------------------
       # Separate booleans rather than more enum values: "is the RX path live"
       # is a different question from "what mode is it in", and consumers ask
       # them independently.
+      #
+      # A boolean has no UNSPECIFIED to fall back to, which makes the
+      # enumerate-do-not-catch-all rule MORE important here, not less: every
+      # possible value of a bool is a positive claim. `false` is not a
+      # refusal — it asserts "this sensor is not receiving", which is just as
+      # unfounded for an unrecognised mode as `true` would be.
+      #
+      # So unknown modes DELETE the field. Absent means "not claimed", and a
+      # consumer that needs to know can tell absent from either answer.
       root.operational_state.actively_receiving = match this.mode {
         this == "OFF" || this == "STANDBY" || this == "ACTIVE_TX_ONLY" ||
         this == "SHUTTING_DOWN" || this == "MAINTENANCE" => false,
-        _ => true
+        this == "ACTIVE" || this == "ACTIVE_RX_ONLY" ||
+        this == "DEGRADED" || this == "FAULT" || this == "STARTING" => true,
+        _ => deleted()
       }
       root.operational_state.actively_transmitting = match this.mode {
         this == "OFF" || this == "STANDBY" || this == "ACTIVE_RX_ONLY" ||
         this == "SHUTTING_DOWN" || this == "MAINTENANCE" => false,
-        _ => true
+        this == "ACTIVE" || this == "ACTIVE_TX_ONLY" ||
+        this == "DEGRADED" || this == "FAULT" || this == "STARTING" => true,
+        _ => deleted()
       }
 
       # ---------------------------------------------------------------------
