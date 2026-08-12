@@ -102,20 +102,69 @@ processor_resources:
 
       # ---------------- Sustainment (the differentiator vs DIS) ----------------
       # Fuel — main_tank in gallons US per placeholder shape.
-      root.sustainment.fluids.fuel_remaining.value = $src.fuel.main_tank.or(0.0)
-      root.sustainment.fluids.fuel_remaining.unit  = "gal_us"
+      #
+      # OMIT, DO NOT DEFAULT. This previously read `.or(0.0)` with the unit
+      # set unconditionally, and that combination was worse than either half:
+      #
+      #   fusion (_eval_fuel) declines to judge when the field is unset, and
+      #   detects unset as `not fuel.unit and fuel.value == 0.0` — BOTH, since
+      #   proto3 gives Quantity no way to distinguish absent from zero and the
+      #   empty unit string is the only available discriminator.
+      #
+      #   Setting the unit unconditionally made that check unreachable for
+      #   this source. An asset whose feed omits fuel data was therefore
+      #   presented as an asset with an EMPTY TANK, and fusion evaluated it as
+      #   a real constraining factor instead of declining.
+      #
+      # The mapping's absence-filling defeated the downstream's
+      # absence-respecting. That is worse than neither side handling absence,
+      # because the code reads as though absence is handled — fusion's check
+      # is right there, correct, and dead.
+      #
+      # Deleting the whole Quantity leaves unit "" and value 0.0 on decode,
+      # which is exactly the sentinel fusion already looks for. No change
+      # downstream is required; the check simply becomes reachable.
+      let fuel_gal = $src.fuel.main_tank.or(null)
+      root.sustainment.fluids.fuel_remaining = if $fuel_gal == null {
+        deleted()
+      } else {
+        { "value": $fuel_gal, "unit": "gal_us" }
+      }
 
       # Ammunition — map by station_id → ConsumableState (uint32 fields).
       # fold builds a {slot_id: ConsumableState} map across the weapons[] array.
+      #
+      # The two `.or(0)` here were NOT equivalent, despite looking identical:
+      #
+      #   quantity_capacity — `.or(0)` is CORRECT and load-bearing. Fusion's
+      #     _eval_ammo skips any slot with `quantity_capacity == 0`, so zero
+      #     is already this field's declared "not evaluable" sentinel. Kept
+      #     deliberately, not by inertia.
+      #
+      #   quantity_remaining — `.or(0)` was a confabulation. With a capacity
+      #     present, a missing round count yielded 0/N = 0%, which fusion
+      #     bands as CRITICAL: "magazine empty". A slot with NO ammunition
+      #     telemetry was reported as a slot that is OUT of ammunition, at the
+      #     highest severity the evaluator emits.
+      #
+      # ConsumableState's uint32s have no proto3 optionality, so omitting the
+      # field cannot express absence — it decodes as 0, the very value that
+      # caused the problem. Map-key absence CAN be expressed, so a slot with
+      # no round count is dropped from the map entirely. Absent slot means
+      # "this source said nothing about this station", which is true.
       root.sustainment.consumables.items = $src.weapons.or([]).fold(
         {},
-        item -> item.tally.merge({
-          item.value.station_id: {
-            "quantity_remaining": item.value.rounds_remaining.or(0),
-            "quantity_capacity":  item.value.rounds_capacity.or(0),
-            "nsn":                item.value.nsn.or(""),
-          }
-        })
+        item -> if item.value.rounds_remaining.or(null) == null {
+          item.tally
+        } else {
+          item.tally.merge({
+            item.value.station_id: {
+              "quantity_remaining": item.value.rounds_remaining,
+              "quantity_capacity":  item.value.rounds_capacity.or(0),
+              "nsn":                item.value.nsn.or(""),
+            }
+          })
+        }
       )
 
       # Subsystem health — proprietary string statuses passed through as
