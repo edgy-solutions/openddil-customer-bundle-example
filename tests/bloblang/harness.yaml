@@ -10,6 +10,28 @@
 # pinned distribution — checked, not assumed. Golden-file diffing needs
 # nothing but the binary itself.
 #
+# ⚠ KNOWN GAP — THIS SUITE TESTS ONE LAYER ABOVE THE ONE THAT CAN FAIL.
+# It runs JSON -> mapping -> JSON and NEVER ENCODES TO PROTOBUF. The real
+# ingress does (`protobuf: operator: from_json`), and protojson rejects
+# unknown fields.
+#
+# Demonstrated, not hypothetical: every golden here pins
+# `provenance.originator_nation` and `provenance.releasable_to`, and the
+# canonical `Provenance` message declares NEITHER. So the suite is green
+# while the mapping it pins cannot be encoded at all — a copying adapter
+# DLQs 100% of its traffic. See the banner at those lines in
+# sample-sensor-mapping.yaml.
+#
+# A golden file records what a mapping PRODUCES. It says nothing about
+# whether the consumer can ACCEPT it. Green here is not green on the wire.
+#
+# FIX SHAPE (not scheduled): add a conformance stage — encode each case's
+# actual output through `from_json` against the canonical message and fail
+# on error. Blocked on the contracts proto tree being available to the
+# overlay's tests, which is a real dependency question rather than a guess
+# at cost. This becomes the ACCEPTANCE TEST for ADR-0029 Phase 0: when the
+# proto captures land, this stage passing is what proves it.
+#
 # WHY THIS MAPPING IS SAFE TO GOLDEN-FILE:
 # sample-sensor-mapping.yaml is fully deterministic — every output field
 # derives from an input field. It generates no uuid, reads no clock. A

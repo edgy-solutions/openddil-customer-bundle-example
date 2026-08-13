@@ -205,10 +205,55 @@ processor_resources:
       root.provenance.source_sequence  = this.sequence | 0
       root.provenance.sample_time      = this.reported_at
 
-      # Releasability labels (ADR-0029). originator_nation is parsed from the
-      # sample deployment's id convention (<NATION>_<SITE>_...). A deployment
-      # whose ids do NOT encode nationality needs a real mapping source; the
-      # config default is honest about being a default, not a derivation.
+      # ======================================================================
+      # ⚠ DO NOT COPY THE NEXT TWO LINES INTO A WORKING ADAPTER — NOT YET.
+      # ======================================================================
+      # THEY DO NOT ENCODE. `Provenance` does not declare `originator_nation`
+      # or `releasable_to` today. Both are an ADR-0029 Phase 0 deliverable
+      # that has not landed: the fields exist in Postgres columns and in the
+      # ADR, and in NO .proto file.
+      #
+      # The real ingress encodes mapping output with
+      #     protobuf: operator: from_json, message: EntityTelemetryEvent
+      # and protojson REJECTS unknown fields. Verified 2026-08-12, not
+      # assumed — the encoder returns:
+      #
+      #     unmarshalling JSON message
+      #     'openddil.telemetry.v1.EntityTelemetryEvent':
+      #     proto: (line 1:54): unknown field "originator_nation"
+      #
+      # That step sits inside a `try:` whose `catch:` routes to `ingress-dlq`.
+      # So an adapter that copies this block today does not lose two fields —
+      # IT SENDS 100% OF ITS TRAFFIC TO THE DEAD-LETTER QUEUE, attributed to
+      # a stage name that names two possible causes. Total ingress failure
+      # for that source, from two lines that look like the rest of the file.
+      #
+      # They are kept, not deleted, because this specimen deliberately shows
+      # the TARGET shape and ADR-0029 Phase 0 is what makes it real. When the
+      # proto captures land, delete this banner and nothing else.
+      #
+      # This warning exists because the file is copied. Nothing else in it is
+      # unencodable, so there is no local signal that these two lines differ
+      # from their neighbours — which is precisely the property that makes a
+      # reference specimen dangerous when it runs ahead of its contract.
+      # (ADR-0017's rule, applied to a mapping: an artifact that is ahead of
+      # what it claims must SAY so rather than teach silently.)
+      #
+      # A second reason not to copy this verbatim, independent of encoding:
+      # `originator_nation` here is PARSED FROM AN ID NAMING CONVENTION
+      # (<NATION>_<SITE>_...). That is inference from a naming habit, not a
+      # declaration by the producer, and releasability is the worst possible
+      # place to inherit an inference by default — ADR-0029 §7's whole gate
+      # rests on telling "not labelled" apart from "labelled by guess".
+      # Legitimate here ONLY as a stated, signed local assumption of the
+      # sample deployment. A real deployment answers "what DECLARES
+      # nationality?" before writing this line. See
+      # PLAN-arc2-slice1-opening-package.md §5 step 2 and the ladder in
+      # DESIGN-2026-08-11-declared-asset-class.md.
+      #
+      # A deployment whose ids do NOT encode nationality needs a real mapping
+      # source; the config default is honest about being a default, not a
+      # derivation.
       root.provenance.originator_nation = this.sensor_id.split("_").index(0) | "UNKNOWN"
       root.provenance.releasable_to     = this.releasable_to | []
 
