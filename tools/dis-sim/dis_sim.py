@@ -130,6 +130,61 @@ def geodetic_to_ecef(lat_deg: float, lon_deg: float, alt_m: float) -> tuple[floa
     return x, y, z
 
 
+
+# ---------------------------------------------------------------------------
+# Entity appearance — the damage-emission control
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS. Until 2026-08-19 this generator hardcoded
+# `entityAppearance = 0`, and a measurement of 3000 records across 8 entities
+# on the lab found the field zero in every one. That mattered because a
+# consumer decoding bits 3-4 of zero reads damage NONE, which maps to
+# HEALTH_STATE_NOMINAL -- a POSITIVE assertion of health. A mapping built
+# against this generator would have declared every asset healthy on the
+# strength of a field nobody set.
+#
+# So the generator has to be able to SAY something on this axis, deliberately,
+# before anything can be built to read it. Sibling of
+# logistics_sim.AssetState.as_unclaimed(): both exist so the honest-absence
+# path and the positive-claim path are each reachable on purpose.
+#
+# THE BIT LAYOUT IS DOMAIN-SPECIFIC AND THAT IS THE WHOLE TRAP. Bit 2 is
+# firepower-kill for LAND platforms and is reused for an unrelated meaning in
+# other domains, so a generator (or decoder) that ignores domain will assert
+# firepower kills on aircraft. Encoded per domain here rather than as one
+# layout, for the same reason the mapping design puts interpretation in the
+# ontology.
+#
+# Layout is standard-derived and MUST be verified against the current
+# SISO-REF-010 / IEEE 1278.1 publication before it is relied on for anything
+# beyond exercising our own pipeline.
+DAMAGE_LEVELS = {"none": 0, "slight": 1, "moderate": 2, "destroyed": 3}
+
+
+def appearance_bits(domain: int,
+                    damage: str = "none",
+                    mobility_kill: bool = False,
+                    firepower_kill: bool = False,
+                    powerplant_on: bool = True,
+                    deactivated: bool = False) -> int:
+    """Compose a 32-bit DIS entity-appearance value for a PLATFORM (kind 1)."""
+    bits = 0
+    bits |= (DAMAGE_LEVELS[damage] & 0x3) << 3       # bits 3-4, all platform domains
+    if mobility_kill:
+        bits |= 1 << 1                                # mobility (land) / propulsion (air)
+    if firepower_kill:
+        if domain != 1:
+            raise ValueError(
+                "firepower_kill is a LAND-domain bit; setting it for domain "
+                f"{domain} would encode an unrelated meaning"
+            )
+        bits |= 1 << 2
+    if powerplant_on:
+        bits |= 1 << 21
+    if deactivated:
+        bits |= 1 << 22
+    return bits
+
+
 class Entity:
     """One emitting entity. Drifts slowly so positions are not static."""
 
@@ -153,6 +208,15 @@ class Entity:
         self.speed_mps = rng.uniform(40, 120) if etype[1] == 2 else rng.uniform(2, 12)
         self.force_id = 1  # friendly
 
+        # Appearance is UNSET by default -- the historical behaviour, and the
+        # correct one: a generator that always claims "undamaged" is making an
+        # assertion it has no basis for, which is the defect this control was
+        # added to make visible rather than to hide.
+        self.damage = "none"
+        self.mobility_kill = False
+        self.firepower_kill = False
+        self.emit_appearance = False
+
     def step(self, dt_s: float) -> None:
         # Crude flat-earth step. Adequate: nothing downstream does geodesy on
         # these, and dead-reckoning is not being exercised.
@@ -168,7 +232,19 @@ class Entity:
         pdu.pduType = 1        # Entity State
         pdu.protocolFamily = 1  # Entity Information / Interaction
         pdu.pduStatus = 0
-        pdu.entityAppearance = 0
+        # Zero unless the operator asked for a claim. Zero is NOT "undamaged"
+        # here -- it is "this generator said nothing", and the two are
+        # indistinguishable in the bits, which is exactly why a consumer must
+        # not read NONE out of an unpopulated field.
+        pdu.entityAppearance = (
+            appearance_bits(
+                domain=self.entity_type[1],
+                damage=self.damage,
+                mobility_kill=self.mobility_kill,
+                firepower_kill=self.firepower_kill,
+            )
+            if self.emit_appearance else 0
+        )
         pdu.capabilities = 0
 
         pdu.entityID.siteID = self.site_id
@@ -221,6 +297,23 @@ def main() -> int:
     p.add_argument("--site-id", type=int, default=int(os.getenv("DIS_SITE_ID", "1")))
     p.add_argument("--app-id", type=int, default=int(os.getenv("DIS_APP_ID", "1")))
     p.add_argument("--seed", type=int, default=int(os.getenv("DIS_SEED", "1337")))
+    p.add_argument("--damage", default=os.getenv("DIS_DAMAGE", ""),
+                   help="Emit entity appearance with this damage level "
+                        "(none|slight|moderate|destroyed). Omitted = the field "
+                        "stays 0 and NO claim is made, which is the default and "
+                        "is NOT the same as 'none'.")
+    p.add_argument("--damage-fraction", type=float,
+                   default=float(os.getenv("DIS_DAMAGE_FRACTION", "1.0")),
+                   help="Fraction of entities that carry the --damage level; "
+                        "the rest emit appearance with damage none. Only "
+                        "meaningful with --damage.")
+    p.add_argument("--mobility-kill", action="store_true",
+                   help="Set the mobility/propulsion-kill bit on damaged "
+                        "entities.")
+    p.add_argument("--firepower-kill", action="store_true",
+                   help="Set the firepower-kill bit on damaged LAND entities. "
+                        "Refused for other domains, where the bit means "
+                        "something else.")
     p.add_argument("--list-types", action="store_true",
                    help="print the recognised entity types and exit")
     args = p.parse_args()
@@ -239,6 +332,24 @@ def main() -> int:
 
     rng = random.Random(args.seed)
     entities = [Entity(i, args.site_id, args.app_id, rng) for i in range(args.entities)]
+
+    # Apply the damage profile, if the operator asked for one. Without
+    # --damage nothing changes and appearance stays 0 -- silence, not health.
+    if args.damage:
+        if args.damage not in DAMAGE_LEVELS:
+            print(f"--damage must be one of {sorted(DAMAGE_LEVELS)}", file=sys.stderr)
+            return 2
+        n_damaged = max(1, round(len(entities) * max(0.0, min(1.0, args.damage_fraction))))
+        for i, ent in enumerate(entities):
+            ent.emit_appearance = True          # every entity now MAKES a claim
+            if i < n_damaged:
+                ent.damage = args.damage
+                ent.mobility_kill = args.mobility_kill
+                # Land only. Refused elsewhere by appearance_bits(), so an
+                # air entity in the damaged set simply does not carry it.
+                ent.firepower_kill = args.firepower_kill and ent.entity_type[1] == 1
+        print(f"appearance: emitting on all {len(entities)} entities; "
+              f"{n_damaged} at damage={args.damage}", file=sys.stderr)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
