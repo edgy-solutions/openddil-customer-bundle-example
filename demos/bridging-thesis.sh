@@ -61,6 +61,14 @@ else
 fi
 [ "$missing" -eq 0 ] || { echo; echo "REFUSING TO RUN — see above."; exit 1; }
 
+# Clear any injection left by a previous run BEFORE measuring the baseline.
+# Without this the baseline shows populated health and the whole demo reads
+# as "it was already like that" — which is exactly what happened on the
+# first full run. A baseline you did not establish is not a baseline.
+$K set env "deploy/$SIM" DIS_DAMAGE- DIS_DAMAGE_FRACTION- >/dev/null 2>&1
+echo "  (cleared any prior injection; waiting for a clean projection cycle)"
+sleep 75
+
 say "1. baseline — health axis before any injection"
 $PG "SELECT COALESCE(health_state,'(unset)'), count(*) FROM telemetry_latest_state GROUP BY 1 ORDER BY 2 DESC;"
 echo "  expect: every row (unset). DIS carries no health until damage is claimed."
@@ -84,15 +92,40 @@ echo "  expect: HEALTH_STATE_FAILED for the damaged half, NOMINAL for the"
 echo "          claimed-undamaged half. Assets from an undeclared source or"
 echo "          with a zero field stay (unset) — absence is preserved."
 
-say "5. subsystem faults — kills arrive as fusion's own vocabulary"
-$PG "SELECT unnest(active_fault_codes), count(*) FROM telemetry_latest_state WHERE active_fault_codes IS NOT NULL GROUP BY 1;" 2>/dev/null \
-  || echo "  (column not projected in this build — read from the topic instead)"
+say "5. what this run does NOT show, stated rather than skipped"
+cat <<'NOTE'
+  Two links are real in code and NOT observable on this lab:
 
-say "6. the constraint — logistics-sim caps what it may claim"
+  * subsystem kills. The mapping emits PROPULSION:INOPERATIVE and
+    WEAPONS:INOPERATIVE into active_fault_codes, but that column is not
+    projected into telemetry_latest_state in this build. Read it off
+    ingress-dis-raw if you need to see it.
+
+  * the sustainment cap. logistics-sim's constrained_tier() refuses to claim
+    health above what the tactical plane permits — proven by unit test,
+    including a mutation that restores the collapse. Its OUTPUT is element
+    synthesis, and asset_element_telemetry has ZERO ROWS on this deployment,
+    so the cap has nothing to render here.
+
+  Neither is a failure. Both are links the lab cannot exercise but the tests
+  do, and saying so is the difference between a demonstration and a claim.
+NOTE
+
+say "6. severity rollup — and why it does not move"
 $PG "SELECT overall_severity, count(*) FROM asset_logistics_status GROUP BY 1 ORDER BY 2 DESC;"
-echo "  expect: the damaged assets cannot be reported mission-capable."
-echo "          THE POINT: the sustainment plane did not observe the damage."
-echo "          It was constrained by a plane it does not own."
+cat <<'NOTE'
+  Expect every asset CRITICAL, unchanged by the injection — measured, not
+  excused. On this lab every asset is ALREADY critical from unrelated
+  constraining factors, so a health-axis contribution cannot move an
+  aggregate that is already saturated.
+
+  THE DEMONSTRATION IS STEPS 1, 3 AND 4. Baseline: every asset (unset).
+  After injection: FAILED for the damaged half, NOMINAL for the half that
+  explicitly claimed no damage, and STILL (unset) for the source that said
+  nothing. Tactical damage crossed into the sustainment plane's inputs and
+  absence survived the crossing — which is the thesis, and the part a
+  saturated rollup cannot show.
+NOTE
 
 say "7. restore"
 $K set env "deploy/$SIM" DIS_DAMAGE- DIS_DAMAGE_FRACTION- >/dev/null
