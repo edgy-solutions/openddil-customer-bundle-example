@@ -1,0 +1,17 @@
+case: starting (source mode STARTING)
+
+A declared source mode the CONTRACT CANNOT EXPRESS.
+
+PowerState declares SHUTTING_DOWN but no counterpart on the way up. Until
+2026-09-04 this mapping emitted "POWER_STATE_STARTING" anyway -- a value
+no enum has ever declared. Nothing caught it, because no case exercised
+STARTING: the 2026-08-15 catch-all fix enumerated the ten declared source
+modes but the suite only ever ran seven of them, and the four it did not
+run were exactly where the invented targets hid.
+
+This case exists so the gap cannot reopen. It pins the honest answer:
+power_state UNSPECIFIED -- declining to claim, rather than substituting
+"ON" and asserting an availability the source did not report.
+
+If PowerState later gains a STARTING value, this golden is where that
+change becomes visible.

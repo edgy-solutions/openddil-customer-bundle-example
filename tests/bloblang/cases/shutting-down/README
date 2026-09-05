@@ -1,0 +1,13 @@
+case: shutting-down (source mode SHUTTING_DOWN)
+
+The half of the startup/shutdown pair the contract DOES declare.
+
+Paired with `starting` on purpose: side by side, the two goldens show one
+source vocabulary meeting an asymmetric target vocabulary, and show the
+mapping handling the asymmetry by saying less rather than by inventing a
+value.
+
+Also pins the open question the 2026-08-15 fix deliberately left open --
+whether a shutting-down sensor is meaningfully FUNCTIONAL_MODE_ACTIVE.
+The golden records today's answer without endorsing it; changing it is
+now a visible diff rather than a silent drift.

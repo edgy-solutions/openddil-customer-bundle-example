@@ -11,15 +11,21 @@
           "unit": "m",
           "value": 1720
         },
-        "lat": 39.4,
-        "lon": -105.5
+        "lat": {
+          "unit": "deg",
+          "value": 39.4
+        },
+        "lon": {
+          "unit": "deg",
+          "value": -105.5
+        }
       }
     }
   },
   "operational_state": {
     "actively_receiving": false,
     "actively_transmitting": false,
-    "functional_mode": "FUNCTIONAL_MODE_STANDBY",
+    "functional_mode": "FUNCTIONAL_MODE_IDLE",
     "health_state": "HEALTH_STATE_NOMINAL",
     "power_state": "POWER_STATE_ON"
   },

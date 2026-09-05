@@ -1,0 +1,11 @@
+case: active-tx-only (source mode ACTIVE_TX_ONLY)
+
+The mirror of active-rx-only, and the reason it is a separate case.
+
+TRANSMIT_ONLY and RECEIVE_ONLY are OPERATOR CHOICES, not faults -- the
+enum says so in both comments. A mapping that folded either into DEGRADED
+would turn a deliberate posture into a logistics signal, which is the
+axis confusion ADR-0026 exists to prevent.
+
+Pinning both directions means a future edit cannot quietly collapse them
+into one another.

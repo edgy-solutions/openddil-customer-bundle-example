@@ -1,0 +1,71 @@
+# Proto-conformance harness — encodes an ALREADY-MAPPED Silver document
+# through the same step the real ingress uses, and reports pass/fail as a
+# one-line verdict on stdout.
+#
+# WHY THIS EXISTS, AND WHAT IT CATCHES THAT run.sh's GOLDENS DO NOT.
+# The golden suite runs JSON -> mapping -> JSON. It never encodes. A golden
+# file records what a mapping PRODUCES; it says nothing about whether the
+# consumer can ACCEPT it. Those are different questions and they failed
+# apart: for a week every golden here pinned `provenance.originator_nation`
+# and passed, while `Provenance` declared no such field and the encoder
+# rejected the whole message. Green suite, unencodable mapping, no
+# contradiction — because the suite tested one layer above the one that
+# broke.
+#
+# THE ENCODE STEP IS COPIED FROM PRODUCTION ON PURPOSE.
+# `protobuf: operator: from_json` inside a `try:` with a `catch:` is exactly
+# what connect/openddil-customer-connect.yaml does before publishing to
+# raw-sensor-stream. Reproducing the shape rather than approximating it is
+# what makes a pass here mean "the real ingress would accept this" instead
+# of "some encoder somewhere accepted this".
+#
+# In production the catch: routes to ingress-dlq. Here it prints the reason,
+# because a test's job is to name the failure and a pipeline's job is to
+# survive it.
+#
+# ⚠ THE PROTO TREE IS SUPPLIED AT RUN TIME, NOT PINNED HERE.
+# `CONFORMANCE_PROTO_DIR` must be exported by the caller; run.sh resolves it
+# (see `resolve_proto_dir` there, which prints the tree it chose and why).
+# Connect performs environment interpolation on the config file itself, so
+# nothing rewrites this file — it is read as-is with the environment
+# supplying the path.
+#
+# CAUTION FOR ANYONE EDITING THIS FILE: that interpolation is applied to the
+# WHOLE FILE, comments included, and an unresolvable reference is a lint
+# error that stops the run. Writing a dollar-brace example in a comment here
+# breaks the config it is documenting — which is exactly how this note came
+# to be written. Name variables in prose, never in the literal syntax.
+#
+# This file is therefore NOT runnable on its own, and that is deliberate. A
+# hardcoded path here would silently test whatever tree happened to sit at
+# that path — the same class of defect as a gate reading the schema of
+# record instead of the deployment. An unset variable interpolates to empty
+# and the encoder then fails to find the message, which is a loud failure
+# rather than a quiet wrong-tree pass.
+#
+# `CONFORMANCE_MESSAGE` overrides the message type for mappings that do not
+# target EntityTelemetryEvent. Per-case override: put the fully-qualified
+# name in the case directory as a one-line file named `message`.
+input:
+  stdin:
+    codec: lines
+
+pipeline:
+  processors:
+    - try:
+        - protobuf:
+            operator: from_json
+            message: ${CONFORMANCE_MESSAGE:openddil.telemetry.v1.EntityTelemetryEvent}
+            import_paths: [ "${CONFORMANCE_PROTO_DIR}" ]
+        # Reaching here means the encoder accepted every field. The encoded
+        # bytes are of no interest to this harness — only that they exist —
+        # so the payload is replaced with a verdict token that survives
+        # binary-unsafe shell capture. (Encoded protobuf on stdout would be
+        # raw bytes; run.sh reads this with $(...), which mangles them.)
+        - mapping: 'root = "CONFORMANCE_OK"'
+    - catch:
+        - mapping: 'root = "CONFORMANCE_FAIL " + error()'
+
+output:
+  stdout:
+    codec: lines

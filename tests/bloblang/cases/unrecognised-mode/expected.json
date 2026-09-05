@@ -11,8 +11,14 @@
           "unit": "m",
           "value": 1710
         },
-        "lat": 39.4,
-        "lon": -105.1
+        "lat": {
+          "unit": "deg",
+          "value": 39.4
+        },
+        "lon": {
+          "unit": "deg",
+          "value": -105.1
+        }
       }
     }
   },

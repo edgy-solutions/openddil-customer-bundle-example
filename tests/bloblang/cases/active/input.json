@@ -1,0 +1,1 @@
+{"sensor_id": "ATL_NORTHPOINT_S03", "callsign": "WATCHTOWER-3", "platform_type": "MRAD_ADVANCED_Sensor", "mode": "ACTIVE", "position": {"lat_deg": 39.5, "lon_deg": -105.6, "alt_m": 1700}, "sequence": 45, "reported_at": "2026-08-09T04:00:30Z", "releasable_to": ["ATL", "BDR"]}

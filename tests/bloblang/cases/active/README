@@ -1,0 +1,11 @@
+case: active (source mode ACTIVE)
+
+The plain baseline: the mode every other case is a deviation from.
+
+Pins that ACTIVE resolves to POWER_STATE_ON + FUNCTIONAL_MODE_ACTIVE +
+HEALTH_STATE_NOMINAL -- all three axes populated, none of them borrowed
+from another axis.
+
+It exists mainly so the conformance stage has an unambiguous positive:
+if this case fails to encode, the failure is in the specimen's spine and
+not in one of the edge modes.

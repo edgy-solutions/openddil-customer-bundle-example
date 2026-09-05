@@ -1,0 +1,1 @@
+{"sensor_id": "BDR_EASTMARK_S04", "callsign": "BEACON-4", "platform_type": "MRAD_Sensor", "mode": "ACTIVE_TX_ONLY", "position": {"lat_deg": 40.1, "lon_deg": -104.2, "alt_m": 1500}, "sequence": 46, "reported_at": "2026-08-09T04:00:35Z", "releasable_to": ["BDR"]}

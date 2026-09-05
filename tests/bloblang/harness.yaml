@@ -10,27 +10,32 @@
 # pinned distribution — checked, not assumed. Golden-file diffing needs
 # nothing but the binary itself.
 #
-# ⚠ KNOWN GAP — THIS SUITE TESTS ONE LAYER ABOVE THE ONE THAT CAN FAIL.
-# It runs JSON -> mapping -> JSON and NEVER ENCODES TO PROTOBUF. The real
-# ingress does (`protobuf: operator: from_json`), and protojson rejects
-# unknown fields.
+# ⚠ THIS SUITE TESTS ONE LAYER ABOVE THE ONE THAT CAN FAIL — AND THE LAYER
+# BELOW IT IS NOW COVERED SEPARATELY.
+# This file runs JSON -> mapping -> JSON and NEVER ENCODES TO PROTOBUF. The
+# real ingress does (`protobuf: operator: from_json`), and protojson rejects
+# both unknown fields and wrongly-shaped ones.
 #
-# Demonstrated, not hypothetical: every golden here pins
-# `provenance.originator_nation` and `provenance.releasable_to`, and the
-# canonical `Provenance` message declares NEITHER. So the suite is green
-# while the mapping it pins cannot be encoded at all — a copying adapter
-# DLQs 100% of its traffic. See the banner at those lines in
-# sample-sensor-mapping.yaml.
+# That gap was not hypothetical. It hid TWO unrelated encode defects in the
+# specimen at once, for different reasons and different lengths of time:
 #
-# A golden file records what a mapping PRODUCES. It says nothing about
-# whether the consumer can ACCEPT it. Green here is not green on the wire.
+#   1. `provenance.originator_nation` / `releasable_to` — fields the proto
+#      did not declare until ADR-0029 Phase 0 (2026-09-04). Ahead of its
+#      contract; the file said so in a banner.
+#   2. `kinematics.position.wgs84.lat` / `lon` as bare numbers where
+#      `Wgs84Position` declares `Quantity`. NOT ahead of any contract —
+#      simply wrong, for as long as the file existed, against a contract
+#      that never changed. Nothing said so, because nothing could.
 #
-# FIX SHAPE (not scheduled): add a conformance stage — encode each case's
-# actual output through `from_json` against the canonical message and fail
-# on error. Blocked on the contracts proto tree being available to the
-# overlay's tests, which is a real dependency question rather than a guess
-# at cost. This becomes the ACCEPTANCE TEST for ADR-0029 Phase 0: when the
-# proto captures land, this stage passing is what proves it.
+# Every golden here pinned both and PASSED. A golden file records what a
+# mapping PRODUCES; it says nothing about whether the consumer can ACCEPT
+# it. Green here was never green on the wire.
+#
+# CLOSED by run.sh's conformance stage (see conformance.yaml), which encodes
+# each case's output through the real ingress's own step. It caught defect 2
+# on its first run. This header is kept rather than deleted because the
+# scope statement is still true — this file's own coverage ends at JSON —
+# and because the two defects are the argument for why the stage exists.
 #
 # WHY THIS MAPPING IS SAFE TO GOLDEN-FILE:
 # sample-sensor-mapping.yaml is fully deterministic — every output field

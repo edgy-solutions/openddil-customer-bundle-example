@@ -1,7 +1,7 @@
 {
   "asset": {
-    "asset_id": "sample:SYL_HIGHLAND_S01",
-    "callsign": "KEEP-1",
+    "asset_id": "sample:BDR_EASTMARK_S04",
+    "callsign": "BEACON-4",
     "platform_variant": "MRAD_Sensor"
   },
   "kinematics": {
@@ -9,34 +9,34 @@
       "wgs84": {
         "alt": {
           "unit": "m",
-          "value": 1600
+          "value": 1500
         },
         "lat": {
           "unit": "deg",
-          "value": 39.0
+          "value": 40.1
         },
         "lon": {
           "unit": "deg",
-          "value": -105.1
+          "value": -104.2
         }
       }
     }
   },
   "operational_state": {
     "actively_receiving": false,
-    "actively_transmitting": false,
-    "functional_mode": "FUNCTIONAL_MODE_UNSPECIFIED",
+    "actively_transmitting": true,
+    "functional_mode": "FUNCTIONAL_MODE_TRANSMIT_ONLY",
     "health_state": "HEALTH_STATE_NOMINAL",
-    "power_state": "POWER_STATE_MAINTENANCE"
+    "power_state": "POWER_STATE_ON"
   },
   "provenance": {
-    "originator_nation": "SYL",
+    "originator_nation": "BDR",
     "producer_id": "sample-sensor-adapter",
     "releasable_to": [
-      "SYL"
+      "BDR"
     ],
-    "sample_time": "2026-08-09T04:00:20Z",
+    "sample_time": "2026-08-09T04:00:35Z",
     "source_protocol": "sample/amqp-json",
-    "source_sequence": 9
+    "source_sequence": 46
   }
 }
