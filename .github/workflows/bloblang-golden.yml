@@ -56,7 +56,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: edgy-solutions/openddil-contracts
-          ref: master
+          # openddil-contracts is on `main`; this overlay is on `master`.
+          # The two repos do not share a default-branch convention and
+          # assuming they did wrote `master` here first.
+          ref: main
           path: .contracts
 
       # The runner image ships python3; the harness uses it only to normalise
