@@ -63,8 +63,34 @@ processor_resources:
       # Tag each scalar with the SOURCE's native unit and let pint convert
       # downstream. Do not normalise here; a mapping that converts units is a
       # mapping that has started doing algorithms.
-      root.kinematics.position.wgs84.lat = this.position.lat_deg
-      root.kinematics.position.wgs84.lon = this.position.lon_deg
+      #
+      # ALL THREE ARE `Quantity {value, unit}` MESSAGES, INCLUDING LAT AND
+      # LON. `Wgs84Position` declares `openddil.common.v1.Quantity` for lat,
+      # lon and alt alike -- degrees are a unit like any other, and ADR-0013
+      # admits no untagged scalar anywhere on the wire.
+      #
+      # Until 2026-09-04 lat and lon were emitted here as BARE NUMBERS while
+      # alt beside them was correctly tagged, in a block whose own first line
+      # says to tag each scalar. The encoder rejects the whole message for it:
+      #
+      #     proto: syntax error (line 1:183): unexpected token 39.2
+      #
+      # It survived because the golden suite ran JSON -> mapping -> JSON and
+      # never encoded; the goldens pinned the bare numbers and passed. The
+      # conformance stage added with ADR-0029 Phase 0 caught it on its first
+      # run. Worth stating plainly: this defect was NOT waiting on a pending
+      # contract like the releasability fields were -- it was simply wrong,
+      # against a contract that had not changed, for as long as the file
+      # existed. An unencodable specimen is copied just as readily as an
+      # encodable one.
+      root.kinematics.position.wgs84.lat = {
+        "unit":  "deg",
+        "value": this.position.lat_deg
+      }
+      root.kinematics.position.wgs84.lon = {
+        "unit":  "deg",
+        "value": this.position.lon_deg
+      }
       root.kinematics.position.wgs84.alt = {
         "unit":  "m",
         "value": this.position.alt_m | 0
@@ -111,9 +137,27 @@ processor_resources:
       # "anything", it is not a residual class.
 
       # --- axis 1: power ---------------------------------------------------
+      # EVERY TARGET BELOW IS A DECLARED `PowerState` VALUE. That is not a
+      # free property of a match block -- it is checked, by the conformance
+      # stage in tests/bloblang. `STARTING` used to map to
+      # "POWER_STATE_STARTING", which the enum has never declared: PowerState
+      # runs UNSPECIFIED / OFF / ON / STANDBY / MAINTENANCE / SHUTTING_DOWN,
+      # with no counterpart to SHUTTING_DOWN on the way up.
+      #
+      # It survived the 2026-08-15 catch-all fix because that fix enumerated
+      # the ten declared SOURCE modes and stopped there. ENUMERATING THE
+      # DOMAIN DOES NOT VALIDATE THE RANGE -- a match arm can name a target
+      # that does not exist, and only an encode says so.
+      #
+      # `STARTING` now maps to UNSPECIFIED, deliberately, rather than to a
+      # neighbouring state. The contract cannot express "powering up", and
+      # substituting ON ("powered on and available") would claim availability
+      # the source did not report. Declining to claim is the honest option
+      # when the vocabulary lacks the word (ADR-0035). The asymmetry in the
+      # enum is recorded as a follow-up, not patched around here.
       root.operational_state.power_state = match this.mode {
         this == "OFF"            => "POWER_STATE_OFF",
-        this == "STARTING"       => "POWER_STATE_STARTING",
+        this == "STARTING"       => "POWER_STATE_UNSPECIFIED",
         this == "SHUTTING_DOWN"  => "POWER_STATE_SHUTTING_DOWN",
         this == "MAINTENANCE"    => "POWER_STATE_MAINTENANCE",
         this == "STANDBY"        => "POWER_STATE_ON",
@@ -133,10 +177,25 @@ processor_resources:
       # and "idle".
       root.operational_state.functional_mode = match this.mode {
         this == "OFF"            => "FUNCTIONAL_MODE_UNSPECIFIED",
-        this == "STANDBY"        => "FUNCTIONAL_MODE_STANDBY",
+        # STANDBY and MAINTENANCE previously mapped to "FUNCTIONAL_MODE_
+        # STANDBY" and "FUNCTIONAL_MODE_MAINTENANCE". NEITHER EXISTS. Both
+        # names were borrowed from PowerState, which does declare them -- an
+        # axis confusion in the very file that teaches ADR-0026's axis model,
+        # and the reason to state the rule explicitly: A SOURCE MODE THAT
+        # NAMES A POWER CONDITION BELONGS ON THE POWER AXIS, and the
+        # functional axis then answers separately what the entity is DOING.
+        #
+        # STANDBY -> IDLE: the enum's own words for IDLE are "powered on but
+        # not actively performing its mission", which is what standby means.
+        # MAINTENANCE -> UNSPECIFIED: a service window says nothing about
+        # what the entity is doing, and power_state already carries
+        # MAINTENANCE. Repeating it here would make the axes redundant
+        # instead of orthogonal, which is the failure ADR-0026 exists to
+        # prevent.
+        this == "STANDBY"        => "FUNCTIONAL_MODE_IDLE",
         this == "ACTIVE_RX_ONLY" => "FUNCTIONAL_MODE_RECEIVE_ONLY",
         this == "ACTIVE_TX_ONLY" => "FUNCTIONAL_MODE_TRANSMIT_ONLY",
-        this == "MAINTENANCE"    => "FUNCTIONAL_MODE_MAINTENANCE",
+        this == "MAINTENANCE"    => "FUNCTIONAL_MODE_UNSPECIFIED",
         this == "ACTIVE"         => "FUNCTIONAL_MODE_ACTIVE",
         this == "DEGRADED"       => "FUNCTIONAL_MODE_ACTIVE",
         this == "FAULT"          => "FUNCTIONAL_MODE_ACTIVE",
@@ -205,39 +264,18 @@ processor_resources:
       root.provenance.source_sequence  = this.sequence | 0
       root.provenance.sample_time      = this.reported_at
 
-      # ======================================================================
-      # ⚠ DO NOT COPY THE NEXT TWO LINES INTO A WORKING ADAPTER — NOT YET.
-      # ======================================================================
-      # THEY DO NOT ENCODE. `Provenance` does not declare `originator_nation`
-      # or `releasable_to` today. Both are an ADR-0029 Phase 0 deliverable
-      # that has not landed: the fields exist in Postgres columns and in the
-      # ADR, and in NO .proto file.
+      # ADR-0029 Phase 0 landed 2026-09-04: `Provenance` now declares
+      # `originator_nation` (9) and `releasable_to` (10). These two lines
+      # encode. Until that day they did not, and this file carried a banner
+      # saying so -- an adapter that copied them sent 100% of its traffic to
+      # the dead-letter queue. The banner is gone because the contract caught
+      # up with the specimen, which is the only reason a warning like that
+      # should ever be removed.
       #
-      # The real ingress encodes mapping output with
-      #     protobuf: operator: from_json, message: EntityTelemetryEvent
-      # and protojson REJECTS unknown fields. Verified 2026-08-12, not
-      # assumed — the encoder returns:
-      #
-      #     unmarshalling JSON message
-      #     'openddil.telemetry.v1.EntityTelemetryEvent':
-      #     proto: (line 1:54): unknown field "originator_nation"
-      #
-      # That step sits inside a `try:` whose `catch:` routes to `ingress-dlq`.
-      # So an adapter that copies this block today does not lose two fields —
-      # IT SENDS 100% OF ITS TRAFFIC TO THE DEAD-LETTER QUEUE, attributed to
-      # a stage name that names two possible causes. Total ingress failure
-      # for that source, from two lines that look like the rest of the file.
-      #
-      # They are kept, not deleted, because this specimen deliberately shows
-      # the TARGET shape and ADR-0029 Phase 0 is what makes it real. When the
-      # proto captures land, delete this banner and nothing else.
-      #
-      # This warning exists because the file is copied. Nothing else in it is
-      # unencodable, so there is no local signal that these two lines differ
-      # from their neighbours — which is precisely the property that makes a
-      # reference specimen dangerous when it runs ahead of its contract.
-      # (ADR-0017's rule, applied to a mapping: an artifact that is ahead of
-      # what it claims must SAY so rather than teach silently.)
+      # What replaced the warning is a check: tests/bloblang/run.sh now
+      # encodes every case through the real ingress's `protobuf from_json`
+      # step. The next time this file runs ahead of the contract, the suite
+      # says so on the same day rather than a reader noticing a week later.
       #
       # A second reason not to copy this verbatim, independent of encoding:
       # `originator_nation` here is PARSED FROM AN ID NAMING CONVENTION

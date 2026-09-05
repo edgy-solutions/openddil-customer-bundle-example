@@ -37,13 +37,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The conformance stage encodes every case against the CANONICAL proto
+      # tree, which this overlay deliberately does not vendor. A vendored
+      # copy is a snapshot that drifts, and a conformance check run against a
+      # stale contract reports green for a shape the real ingress rejects —
+      # strictly worse than no check.
+      #
+      # Checked out at master rather than pinned: this stage's question is
+      # "does the specimen encode against the contract as it stands today?"
+      # A pinned ref would answer a question about the past, and the whole
+      # point of the stage is that the specimen once ran a week ahead of the
+      # contract without anything noticing.
+      #
+      # Public repo, so no token. If it ever goes private this step fails at
+      # checkout — loudly, before the suite runs — rather than degrading into
+      # a silent skip.
+      - name: Check out the contracts proto tree
+        uses: actions/checkout@v4
+        with:
+          repository: edgy-solutions/openddil-contracts
+          ref: master
+          path: .contracts
+
       # The runner image ships python3; the harness uses it only to normalise
       # key order before diffing, so a Connect upgrade that reorders keys
       # reports as unchanged rather than as a regression.
       - name: Run golden-file mappings
+        env:
+          OPENDDIL_PROTO_DIR: ${{ github.workspace }}/.contracts/proto
         run: |
           chmod +x tests/bloblang/run.sh
-          tests/bloblang/run.sh
+          # Output is teed rather than re-run: the assertions below read this
+          # file. Running the suite twice would double the cost and, worse,
+          # let the two runs disagree — the assertion must be about the run
+          # that decided the job, not about a second one.
+          set -o pipefail
+          tests/bloblang/run.sh 2>&1 | tee /tmp/golden.out
 
       # A suite that silently tests nothing is worse than no suite. If the
       # cases directory is ever emptied or the runner stops finding it, fail
@@ -56,3 +85,28 @@ jobs:
             echo "no cases found — the suite would have passed vacuously" >&2
             exit 1
           fi
+
+      # The conformance stage can be told to skip (--allow-missing-proto).
+      # Nothing in this workflow passes that flag, and this step exists to
+      # keep it that way: a skip added later "to get CI green" would silence
+      # the only check that looks at the encode seam, and the summary line
+      # would still read as a pass to anyone skimming.
+      #
+      # Asserting on the OUTPUT rather than on the workflow text, because the
+      # skip could also arrive via the script's own defaults changing.
+      - name: Assert the conformance stage actually encoded
+        run: |
+          out="$(cat /tmp/golden.out)"
+          echo "$out" | grep -q "^conformance: " || {
+            echo "no conformance summary line — the stage did not run" >&2; exit 1; }
+          echo "$out" | grep -q "conformance SKIPPED" && {
+            echo "conformance was SKIPPED; the encode seam is unchecked" >&2; exit 1; }
+          n_cases=$(find tests/bloblang/cases -mindepth 1 -maxdepth 1 -type d | wc -l)
+          # Anchored on a digit: the summary line is the only one whose
+          # second field is a count. Belt and braces with the rename in
+          # run.sh — an assertion that depends on no other line ever sharing
+          # its prefix is an assertion waiting to read the wrong line.
+          n_enc=$(echo "$out" | awk '/^conformance: [0-9]/{print $2}')
+          echo "cases: $n_cases  conformance-encoded: $n_enc"
+          [ "$n_enc" = "$n_cases" ] || {
+            echo "conformance encoded $n_enc of $n_cases cases" >&2; exit 1; }
