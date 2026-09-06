@@ -58,6 +58,7 @@ likewise invented and follow the sample overlay's fictional naming.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import os
@@ -102,6 +103,69 @@ RECOGNISED_TYPES: list[tuple[tuple[int, int, int, int, int, int, int], str]] = [
     ((1, 2, 225, 41, 1, 1, 0), "F-16C-Block50"),
     ((1, 2, 225, 50, 1, 1, 0), "MQ-9A-Block5"),
 ]
+
+# ---------------------------------------------------------------------------
+# THE ENUMERATION LIST IS A DATA DROP (VR-Forces readiness)
+# ---------------------------------------------------------------------------
+# The list above is a DEFAULT, not the contract. A scenario names the entity
+# types it will actually emit, and that list arrives as data — from whoever
+# owns the scenario — rather than being transcribed into this file by
+# somebody reading a document.
+#
+# Set DIS_ENTITY_TYPES_PATH to a JSON file shaped as:
+#
+#     [
+#       {"type": [1, 1, 225, 1, 3, 1, 0], "variant": "M1A2-SEPv3"},
+#       {"type": [2, 1, 225,  2, 1, 1, 0], "variant": "120mm-HEAT"}
+#     ]
+#
+# `kind` is the first element. **kind=2 is MUNITION**, and the ontology
+# currently recognises zero of them (GD-11) — which is exactly why the list
+# must be able to carry them before anyone can measure the gap. This loader
+# takes whatever it is given; it does not filter by kind, and it does not
+# know which kinds are "supposed" to appear.
+#
+# ⚠ NOTHING IS INVENTED HERE. If the file is absent the default list above
+# is used unchanged, so this is inert until a real scenario list exists. A
+# placeholder munition entry would be worse than none: it would make the
+# coverage query report progress that no scenario had asked for.
+def load_entity_types(
+    path: str | None = None,
+) -> list[tuple[tuple[int, int, int, int, int, int, int], str]]:
+    """Scenario enumeration list, or the built-in default when absent.
+
+    Fails LOUDLY on a malformed file rather than silently falling back: a
+    scenario list that was supplied and then ignored is the worst outcome,
+    because the run looks like it honoured it.
+    """
+    path = path or os.getenv("DIS_ENTITY_TYPES_PATH", "")
+    if not path:
+        return RECOGNISED_TYPES
+    with open(path, encoding="utf-8") as fh:
+        raw = json.load(fh)
+    if not isinstance(raw, list) or not raw:
+        raise SystemExit(f"{path}: expected a non-empty JSON list of entity types")
+    out: list[tuple[tuple[int, int, int, int, int, int, int], str]] = []
+    for i, item in enumerate(raw):
+        try:
+            tup = tuple(int(v) for v in item["type"])
+            variant = str(item["variant"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SystemExit(f"{path}[{i}]: {exc!r} — need {{'type': [7 ints], 'variant': str}}")
+        if len(tup) != 7:
+            raise SystemExit(f"{path}[{i}]: DIS entity type is a 7-tuple, got {len(tup)}")
+        if not variant:
+            raise SystemExit(f"{path}[{i}]: variant must be non-empty")
+        out.append((tup, variant))  # type: ignore[arg-type]
+    kinds = sorted({t[0] for t, _ in out})
+    print(f"dis-sim: loaded {len(out)} entity type(s) from {path}; kinds present: {kinds}",
+          flush=True)
+    return out
+
+
+# Resolved ONCE at import: a malformed scenario list must stop the sim at
+# start-up, not on the tick that first needs an entity.
+ENTITY_TYPES = load_entity_types()
 
 # Fictional callsign stems, consistent with the sample overlay's invented
 # naming. Deliberately not drawn from any real unit designation.
@@ -189,7 +253,8 @@ class Entity:
     """One emitting entity. Drifts slowly so positions are not static."""
 
     def __init__(self, index: int, site_id: int, app_id: int, rng: random.Random):
-        etype, variant = RECOGNISED_TYPES[index % len(RECOGNISED_TYPES)]
+        types = ENTITY_TYPES or RECOGNISED_TYPES
+        etype, variant = types[index % len(types)]
         self.entity_type = etype
         self.variant = variant
         self.site_id = site_id
