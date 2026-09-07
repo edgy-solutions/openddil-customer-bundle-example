@@ -224,6 +224,86 @@ def geodetic_to_ecef(lat_deg: float, lon_deg: float, alt_m: float) -> tuple[floa
 DAMAGE_LEVELS = {"none": 0, "slight": 1, "moderate": 2, "destroyed": 3}
 
 
+# ---------------------------------------------------------------------------
+# PER-ASSET DAMAGE CONTROL — the injection lever, on the wire
+# ---------------------------------------------------------------------------
+# WHY IT LIVES HERE AND NOT IN THE EVALUATOR. A failure lever inside
+# prognostics or fusion would have OpenDDIL's own derivation manufacturing a
+# sustainment fact: a degradation with no source, no wire message and no
+# synthetic stamp — the product proving itself against a fact it invented.
+# The sim is the synthetic SOURCE; it publishes onto the same wire the
+# product consumes, so the path from message to screen is the real one.
+#
+# The tactical route is also the more interesting one: damage -> appearance
+# bits -> health axis -> operational-state evaluation -> severity transition
+# is ADR-0039's thesis (tactical damage crossing into the sustainment plane)
+# demonstrated rather than described.
+#
+# SHAPE: a declarative desired-state file, re-read each tick.
+#   {"dis:1:1:1005": "moderate", "1007": "destroyed"}
+#
+# Keys accept either the canonical `dis:site:app:entity` an operator reads off
+# the screen, or a bare entity number. Values are DAMAGE_LEVELS keys, plus
+# "unspecified" which means EMIT NO CLAIM for that asset — the deliberate
+# silence, distinct from "none" which asserts undamaged.
+#
+# WHY DECLARATIVE AND RE-READ RATHER THAN AN API:
+#   * idempotent by construction — the file IS the desired state, so applying
+#     it twice is applying it once, and there is no command to replay;
+#   * default-off — absent file changes nothing;
+#   * an operator can edit it mid-demo and the next tick carries the change,
+#     which is what "drive one asset degraded during the sever" needs.
+#
+# Malformed entries are logged and SKIPPED rather than fatal: this is a live
+# control surface during a demonstration, and a typo must not take the
+# generator down mid-run. That is the opposite of the enumeration list's
+# fail-loudly rule, and deliberately so — a scenario list is read once at
+# start-up where stopping is cheap, this is read every tick where it is not.
+_DAMAGE_MAP: dict[str, str] = {}
+_DAMAGE_MAP_MTIME: float | None = None
+
+
+def _damage_map_key(site: int, app: int, entity: int) -> tuple[str, str]:
+    return (f"dis:{site}:{app}:{entity}", str(entity))
+
+
+def reload_damage_map(path: str) -> dict[str, str]:
+    """Re-read the per-asset damage file when it changes. Returns the map."""
+    global _DAMAGE_MAP, _DAMAGE_MAP_MTIME
+    if not path:
+        return {}
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        if _DAMAGE_MAP:
+            LOG.info("damage map %s disappeared; reverting to no overrides", path)
+        _DAMAGE_MAP, _DAMAGE_MAP_MTIME = {}, None
+        return {}
+    if mtime == _DAMAGE_MAP_MTIME:
+        return _DAMAGE_MAP
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        if not isinstance(raw, dict):
+            raise ValueError("expected a JSON object of asset -> damage level")
+        out: dict[str, str] = {}
+        for k, v in raw.items():
+            level = str(v).lower()
+            if level not in DAMAGE_LEVELS and level != "unspecified":
+                LOG.warning("damage map: %r has unknown level %r; skipping "
+                            "(valid: %s, unspecified)", k, v,
+                            "|".join(DAMAGE_LEVELS))
+                continue
+            out[str(k).strip()] = level
+        _DAMAGE_MAP, _DAMAGE_MAP_MTIME = out, mtime
+        LOG.info("damage map reloaded from %s: %d override(s) %s",
+                 path, len(out), out)
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("damage map %s unreadable (%s); keeping previous %d "
+                    "override(s)", path, exc, len(_DAMAGE_MAP))
+    return _DAMAGE_MAP
+
+
 def appearance_bits(domain: int,
                     damage: str = "none",
                     mobility_kill: bool = False,
@@ -281,6 +361,34 @@ class Entity:
         self.mobility_kill = False
         self.firepower_kill = False
         self.emit_appearance = False
+
+    def apply_damage_override(self, damage_map: dict[str, str]) -> bool:
+        """Apply a per-asset override from the declarative map, if present.
+
+        Returns True when this entity is under an override, so the caller can
+        report which assets are being driven rather than leaving it implicit.
+
+        Precedence is deliberate: a per-asset entry WINS over the fleet-wide
+        --damage, because the point of the lever is to make ONE asset differ
+        from its fleet. `unspecified` turns emission off for that asset — a
+        deliberate silence, and the reason the map has a value that is not a
+        damage level at all.
+        """
+        if not damage_map:
+            return False
+        for key in _damage_map_key(self.site_id, self.app_id, self.entity_id):
+            level = damage_map.get(key)
+            if level is None:
+                continue
+            if level == "unspecified":
+                # Say nothing about this asset. NOT the same as "none":
+                # none asserts undamaged, this asserts nothing at all.
+                self.emit_appearance = False
+            else:
+                self.damage = level
+                self.emit_appearance = True
+            return True
+        return False
 
     def step(self, dt_s: float) -> None:
         # Crude flat-earth step. Adequate: nothing downstream does geodesy on
@@ -367,6 +475,14 @@ def main() -> int:
                         "(none|slight|moderate|destroyed). Omitted = the field "
                         "stays 0 and NO claim is made, which is the default and "
                         "is NOT the same as 'none'.")
+    p.add_argument("--damage-map", default=os.getenv("DIS_DAMAGE_MAP_PATH", ""),
+                   help="Path to a JSON file of per-asset damage overrides, "
+                        "re-read every tick: {\"dis:1:1:1005\": \"moderate\"}. "
+                        "Keys accept the canonical dis:site:app:entity or a "
+                        "bare entity number; values are a damage level or "
+                        "\"unspecified\" to emit NO claim for that asset. A "
+                        "per-asset entry overrides --damage. Absent file "
+                        "changes nothing.")
     p.add_argument("--damage-fraction", type=float,
                    default=float(os.getenv("DIS_DAMAGE_FRACTION", "1.0")),
                    help="Fraction of entities that carry the --damage level; "
@@ -434,9 +550,17 @@ def main() -> int:
     # closer to a real CGF and easier to watch a buffer fill against.
     per_entity_gap = args.interval / max(len(entities), 1)
 
+    overridden: set[int] = set()
     try:
         while True:
+            # Re-read the per-asset control once per sweep, not per entity:
+            # one stat() per tick, and every entity in a sweep sees the same
+            # desired state rather than a file that changed mid-loop.
+            dmap = reload_damage_map(args.damage_map)
+            now_overridden = set()
             for e in entities:
+                if e.apply_damage_override(dmap):
+                    now_overridden.add(e.entity_id)
                 e.step(per_entity_gap)
                 try:
                     sock.sendto(serialize(e.to_pdu(args.exercise_id, args.protocol_version)),
@@ -446,6 +570,16 @@ def main() -> int:
                     errors += 1
                     LOG.warning("send failed: %s", exc)
                 time.sleep(per_entity_gap)
+            if now_overridden != overridden:
+                # Log the CHANGE, not the state: a line every tick would bury
+                # the one moment an operator cares about.
+                added = sorted(now_overridden - overridden)
+                removed = sorted(overridden - now_overridden)
+                if added:
+                    LOG.info("damage override ON for entity id(s): %s", added)
+                if removed:
+                    LOG.info("damage override CLEARED for entity id(s): %s", removed)
+                overridden = now_overridden
 
             if time.time() - last_report >= 30:
                 LOG.info("stats — sent=%d errors=%d", sent, errors)
