@@ -361,6 +361,9 @@ class Entity:
         self.mobility_kill = False
         self.firepower_kill = False
         self.emit_appearance = False
+        # Baseline defaults; overwritten after the --damage profile runs.
+        self._baseline_damage = "none"
+        self._baseline_emit = False
 
     def apply_damage_override(self, damage_map: dict[str, str]) -> bool:
         """Apply a per-asset override from the declarative map, if present.
@@ -374,10 +377,8 @@ class Entity:
         deliberate silence, and the reason the map has a value that is not a
         damage level at all.
         """
-        if not damage_map:
-            return False
         for key in _damage_map_key(self.site_id, self.app_id, self.entity_id):
-            level = damage_map.get(key)
+            level = (damage_map or {}).get(key)
             if level is None:
                 continue
             if level == "unspecified":
@@ -388,6 +389,22 @@ class Entity:
                 self.damage = level
                 self.emit_appearance = True
             return True
+
+        # NO ENTRY FOR THIS ENTITY -> RESTORE THE BASELINE.
+        #
+        # This was missing, and it made the control only half declarative:
+        # emptying the file left every previously-injected entity damaged
+        # forever, because nothing reset what an earlier tick had set. Found
+        # by running the downward leg — the injection cleared in the file and
+        # the asset stayed CRITICAL.
+        #
+        # A desired-state file has to be able to say "no override" by
+        # OMISSION, or it is an append-only command log wearing a state
+        # file's clothes. The baseline is whatever --damage established at
+        # start-up, so clearing returns to the fleet-wide profile rather than
+        # to an invented "undamaged".
+        self.damage = self._baseline_damage
+        self.emit_appearance = self._baseline_emit
         return False
 
     def step(self, dt_s: float) -> None:
@@ -531,6 +548,12 @@ def main() -> int:
                 ent.firepower_kill = args.firepower_kill and ent.entity_type[1] == 1
         print(f"appearance: emitting on all {len(entities)} entities; "
               f"{n_damaged} at damage={args.damage}", file=sys.stderr)
+
+    # Freeze the post-profile state as each entity's BASELINE, so a cleared
+    # override returns here rather than to a hardcoded default.
+    for ent in entities:
+        ent._baseline_damage = ent.damage
+        ent._baseline_emit = ent.emit_appearance
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
