@@ -81,14 +81,17 @@ except ImportError:  # pragma: no cover
 LOG = logging.getLogger("dis-sim")
 
 # ---------------------------------------------------------------------------
-# The recognised set, transcribed from
-# openddil-contracts/ontology/dis_entity_types.yaml.
+# The built-in type list: one tuple per platform, each of them a key in
+# openddil-contracts/ontology/dis_entity_types.yaml. The ontology can hold
+# more than one key for a platform (the MQ-9A as both Reaper and Predator B);
+# this list emits one.
 #
 # Key order is the DIS 7-tuple:
 #   (kind, domain, country, category, subcategory, specific, extra)
 #
-# If that ontology file gains or loses entries, update this list — a type that
-# is not in the ontology is not an error here, it is an invisible asset there.
+# A tuple here that is not in the ontology is not an error here, it is an
+# invisible asset there. Position in this list means nothing: ENTITY_PLATFORMS
+# below decides which entity id is which platform.
 # ---------------------------------------------------------------------------
 RECOGNISED_TYPES: list[tuple[tuple[int, int, int, int, int, int, int], str]] = [
     ((1, 1, 225, 1, 1, 2, 0), "M1A1"),
@@ -165,6 +168,76 @@ def load_entity_types(
 # Resolved ONCE at import: a malformed scenario list must stop the sim at
 # start-up, not on the tick that first needs an entity.
 ENTITY_TYPES = load_entity_types()
+
+# ---------------------------------------------------------------------------
+# EACH ENTITY ID IS PINNED TO ONE PLATFORM
+# ---------------------------------------------------------------------------
+# The asset id is dis:{site}:{app}:{entity}, and every store downstream keys
+# on it: the upsert tables, wear, and the CM baseline that a
+# `baseline_assigned` event attached. So an id keeps its platform across
+# releases. The map states that platform per id; editing the type list above
+# relabels nothing.
+#
+# Values are variants, resolved against the loaded type list. An id with no
+# entry, or a variant the list does not carry exactly once, stops the sim at
+# start-up.
+#
+# Set DIS_ENTITY_PLATFORMS_PATH to replace the map with a JSON object:
+#
+#     {"dis:1:1:1000": "M1A1", "dis:1:1:1001": "M1A2-SEPv3"}
+#
+# The built-in map covers the two lab edges in k8s/dis-sim.yaml (site 1 with
+# 8 entities, site 2 with 6). 1004 at both sites is the AH-64E-V6; see
+# openddil-contracts decisions/FOLLOW-UPS.md "RCV-M stays unmapped".
+_LAB_EDGE = [
+    "M1A1", "M1A2-SEPv3", "M2A3-Bradley", "HMMWV-M1151A1", "AH-64E-V6",
+    "AH-64E-V6", "UH-60M", "CH-47F-BlockII",
+]
+DEFAULT_ENTITY_PLATFORMS: dict[str, str] = {
+    **{f"dis:1:1:{1000 + i}": v for i, v in enumerate(_LAB_EDGE)},
+    **{f"dis:2:1:{1000 + i}": v for i, v in enumerate(_LAB_EDGE[:6])},
+}
+
+
+def load_entity_platforms(path: str | None = None) -> dict[str, str]:
+    """Pinned platform per asset id, or the built-in map when absent."""
+    path = path or os.getenv("DIS_ENTITY_PLATFORMS_PATH", "")
+    if not path:
+        return DEFAULT_ENTITY_PLATFORMS
+    with open(path, encoding="utf-8") as fh:
+        raw = json.load(fh)
+    if not isinstance(raw, dict) or not raw:
+        raise SystemExit(f"{path}: expected a non-empty JSON object of asset id -> variant")
+    for key, variant in raw.items():
+        if not isinstance(variant, str) or not variant:
+            raise SystemExit(f"{path}: {key!r} needs a non-empty variant string")
+    print(f"dis-sim: loaded {len(raw)} pinned platform(s) from {path}", flush=True)
+    return dict(raw)
+
+
+ENTITY_PLATFORMS = load_entity_platforms()
+
+
+def platform_for(
+    site_id: int,
+    app_id: int,
+    entity_id: int,
+    pins: dict[str, str] | None = None,
+    types: list[tuple[tuple[int, int, int, int, int, int, int], str]] | None = None,
+) -> tuple[tuple[int, int, int, int, int, int, int], str]:
+    """The pinned (tuple, variant) for one asset id. Refuses, never guesses."""
+    pins = ENTITY_PLATFORMS if pins is None else pins
+    types = (ENTITY_TYPES or RECOGNISED_TYPES) if types is None else types
+    key = f"dis:{site_id}:{app_id}:{entity_id}"
+    variant = pins.get(key)
+    if variant is None:
+        raise SystemExit(f"{key}: no platform pinned; add it to the platform map "
+                         "(DIS_ENTITY_PLATFORMS_PATH or DEFAULT_ENTITY_PLATFORMS)")
+    tuples = [t for t, v in types if v == variant]
+    if len(tuples) != 1:
+        raise SystemExit(f"{key}: pinned variant {variant!r} appears {len(tuples)} "
+                         "time(s) in the entity type list; it must appear once")
+    return tuples[0], variant
 
 # Fictional callsign stems, consistent with the sample overlay's invented
 # naming. Deliberately not drawn from any real unit designation.
@@ -332,13 +405,10 @@ class Entity:
     """One emitting entity. Drifts slowly so positions are not static."""
 
     def __init__(self, index: int, site_id: int, app_id: int, rng: random.Random):
-        types = ENTITY_TYPES or RECOGNISED_TYPES
-        etype, variant = types[index % len(types)]
-        self.entity_type = etype
-        self.variant = variant
         self.site_id = site_id
         self.app_id = app_id
         self.entity_id = 1000 + index
+        self.entity_type, self.variant = platform_for(site_id, app_id, self.entity_id)
 
         stem = CALLSIGN_STEMS[index % len(CALLSIGN_STEMS)]
         # DIS marking is 11 bytes + a charset byte; keep it short and ASCII.
@@ -349,7 +419,7 @@ class Entity:
         self.alt = 1600.0 + rng.uniform(0, 200)
         self.heading = rng.uniform(0, 2 * math.pi)
         # Air domain (2) moves faster than land (1).
-        self.speed_mps = rng.uniform(40, 120) if etype[1] == 2 else rng.uniform(2, 12)
+        self.speed_mps = rng.uniform(40, 120) if self.entity_type[1] == 2 else rng.uniform(2, 12)
         self.force_id = 1  # friendly
 
         # Appearance is UNSET by default -- the historical behaviour, and the
@@ -521,9 +591,13 @@ def main() -> int:
     )
 
     if args.list_types:
-        print("Recognised DIS entity types (from ontology/dis_entity_types.yaml):")
+        print("Built-in DIS entity types (each a key in "
+              "openddil-contracts ontology/dis_entity_types.yaml):")
         for t, variant in RECOGNISED_TYPES:
             print("  %-22s %s" % ("_".join(str(v) for v in t), variant))
+        print("\nPinned platforms:")
+        for key, variant in ENTITY_PLATFORMS.items():
+            print("  %-22s %s" % (key, variant))
         print("\nAnything not listed resolves to _default -> UNKNOWN.")
         return 0
 
