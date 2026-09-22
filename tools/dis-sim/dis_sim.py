@@ -91,17 +91,16 @@ LOG = logging.getLogger("dis-sim")
 # is not in the ontology is not an error here, it is an invisible asset there.
 # ---------------------------------------------------------------------------
 RECOGNISED_TYPES: list[tuple[tuple[int, int, int, int, int, int, int], str]] = [
-    ((1, 1, 225, 1, 1, 1, 0), "M1A1"),
-    ((1, 1, 225, 1, 3, 1, 0), "M1A2-SEPv3"),
-    ((1, 1, 225, 2, 1, 1, 0), "M2A3-Bradley"),
-    ((1, 1, 225, 3, 1, 1, 0), "HMMWV-M1151A1"),
-    ((1, 1, 225, 80, 1, 1, 0), "RCV-M"),
-    ((1, 2, 225, 20, 1, 3, 0), "AH-64E-V6"),
-    ((1, 2, 225, 21, 1, 2, 0), "UH-60M"),
-    ((1, 2, 225, 22, 1, 1, 0), "CH-47F-BlockII"),
-    ((1, 2, 225, 40, 1, 5, 0), "F-35A-Block4"),
-    ((1, 2, 225, 41, 1, 1, 0), "F-16C-Block50"),
-    ((1, 2, 225, 50, 1, 1, 0), "MQ-9A-Block5"),
+    ((1, 1, 225, 1, 1, 2, 0), "M1A1"),
+    ((1, 1, 225, 1, 1, 18, 0), "M1A2-SEPv3"),
+    ((1, 1, 225, 2, 1, 9, 0), "M2A3-Bradley"),
+    ((1, 1, 225, 6, 1, 32, 1), "HMMWV-M1151A1"),
+    ((1, 2, 225, 20, 1, 7, 0), "AH-64E-V6"),
+    ((1, 2, 225, 21, 2, 26, 0), "UH-60M"),
+    ((1, 2, 225, 23, 1, 9, 0), "CH-47F-BlockII"),
+    ((1, 2, 225, 1, 12, 1, 0), "F-35A-Block4"),
+    ((1, 2, 225, 1, 3, 3, 4), "F-16C-Block50"),
+    ((1, 2, 225, 50, 34, 1, 0), "MQ-9A-Block5"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -115,8 +114,8 @@ RECOGNISED_TYPES: list[tuple[tuple[int, int, int, int, int, int, int], str]] = [
 # Set DIS_ENTITY_TYPES_PATH to a JSON file shaped as:
 #
 #     [
-#       {"type": [1, 1, 225, 1, 3, 1, 0], "variant": "M1A2-SEPv3"},
-#       {"type": [2, 1, 225,  2, 1, 1, 0], "variant": "120mm-HEAT"}
+#       {"type": [1, 1, 225, 1, 1, 18, 0], "variant": "M1A2-SEPv3"},
+#       {"type": [2, 2, 225,  1, 8,  0, 0], "variant": "Javelin"}
 #     ]
 #
 # `kind` is the first element. **kind=2 is MUNITION**, and the ontology
