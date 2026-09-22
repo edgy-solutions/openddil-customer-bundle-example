@@ -51,11 +51,18 @@ def load_siso_index(path: str) -> tuple[set[tuple[int, ...]], str]:
 
     A category or subcategory row is itself a valid type (the remaining
     fields zero), so those levels are indexed too.
+
+    Only the Entity Types table (enum uid 30) is read. The same XML carries
+    an Aggregate Types table (uid 207) that reuses the <entity> element, and
+    an aggregate tuple is not an entity type.
     """
     root = ET.parse(path).getroot()
     title = root.get("title") or "untitled"
+    tables = [t for t in root if _local(t.tag) == "cet" and t.get("uid") == "30"]
+    if len(tables) != 1:
+        raise SystemExit("--siso: expected one Entity Types table (uid 30); is this a SISO-REF-010 XML?")
     idx: set[tuple[int, ...]] = set()
-    for ent in root.iter():
+    for ent in tables[0]:
         if _local(ent.tag) != "entity":
             continue
         head = (int(ent.get("kind")), int(ent.get("domain")), int(ent.get("country")))
