@@ -9,6 +9,18 @@
 set -euo pipefail
 NS="${1:-openddil}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+IMAGE="${DIS_SIM_IMAGE:-openddil/dis-sim:1.0}"
+
+# The image carries opendis; nothing pulls it from a registry because there
+# is none. Say so HERE, where the fix is one command away, rather than
+# leaving it to be read off an ImagePullBackOff later.
+if command -v docker >/dev/null 2>&1 && ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "WARNING: $IMAGE is not in the local docker daemon."
+  echo "         Run ./build.sh --load first, or make sure the cluster's"
+  echo "         nodes already have it. Continuing anyway -- a remote"
+  echo "         cluster may well have it without this machine knowing."
+  echo
+fi
 
 echo "namespace: $NS"
 kubectl -n "$NS" create configmap dis-sim-src \

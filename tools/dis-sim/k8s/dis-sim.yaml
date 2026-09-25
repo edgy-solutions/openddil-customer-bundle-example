@@ -5,15 +5,24 @@
 # door source. See ../dis_sim.py for what this is and — more importantly —
 # what it is not (it is not a simulation).
 #
-# The script is mounted from a ConfigMap rather than baked into an image, so
-# there is nothing to build or push. `../deploy.sh` creates that ConfigMap
-# from the single source file, which keeps one copy of the generator rather
-# than a file and a manifest that drift.
+# SCRIPT MOUNTED, DEPENDENCIES BAKED -- and the split is deliberate.
 #
-# opendis is pip-installed at container start. That costs a few seconds on
-# each restart and buys not maintaining a registry for a test fixture. Pin
-# the version — it must match what sensor-ingest DECODES with, which is the
-# whole reason wire compatibility is true by construction here.
+# The script is mounted from a ConfigMap that `../deploy.sh` recreates from
+# the single source file on every run, which keeps one copy of the generator
+# rather than a file and a manifest that drift.
+#
+# opendis is baked into the image (see ../Dockerfile). It used to be
+# pip-installed in the args below on every container start, which bought not
+# maintaining an image and cost a reachable PyPI on every restart of every
+# replica -- in an air-gapped lab, a generator that simply never starts, and
+# a CrashLoop that reads as a simulator fault rather than a network one.
+#
+# So: the dependency changes once a year and is baked; the script changes
+# every session and is mounted. Build it with `../build.sh` before applying
+# this, or the pods will look for an image the node does not have.
+#
+# The pin must match what sensor-ingest DECODES with. That is the whole
+# reason wire compatibility is true by construction here.
 #
 # TARGETING: one Deployment per edge, each pointed at that edge's
 # sensor-ingest Service. Severing one edge's uplink (rung iii) then leaves
@@ -41,13 +50,16 @@ spec:
     spec:
       containers:
         - name: dis-sim
-          image: python:3.11-slim
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -e
-              pip install --quiet --no-cache-dir opendis==1.0
-              exec python /src/dis_sim.py
+          image: openddil/dis-sim:1.0
+          # Built locally by ../build.sh and loaded into the node; there is
+          # no registry behind this name. IfNotPresent so the kubelet uses
+          # what it has instead of reaching for a Docker Hub repo that does
+          # not exist -- Always here would reintroduce the exact network
+          # dependency at start that baking the image removed.
+          imagePullPolicy: IfNotPresent
+          # No shell wrapper: python is pid 1, so SIGTERM reaches it and the
+          # pod stops when asked rather than after the grace period.
+          command: ["python", "/src/dis_sim.py"]
           env:
             - name: DIS_TARGET_HOST
               value: openddil-sensor-ingest-edge-northpoint
@@ -105,13 +117,16 @@ spec:
     spec:
       containers:
         - name: dis-sim
-          image: python:3.11-slim
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -e
-              pip install --quiet --no-cache-dir opendis==1.0
-              exec python /src/dis_sim.py
+          image: openddil/dis-sim:1.0
+          # Built locally by ../build.sh and loaded into the node; there is
+          # no registry behind this name. IfNotPresent so the kubelet uses
+          # what it has instead of reaching for a Docker Hub repo that does
+          # not exist -- Always here would reintroduce the exact network
+          # dependency at start that baking the image removed.
+          imagePullPolicy: IfNotPresent
+          # No shell wrapper: python is pid 1, so SIGTERM reaches it and the
+          # pod stops when asked rather than after the grace period.
+          command: ["python", "/src/dis_sim.py"]
           env:
             - name: DIS_TARGET_HOST
               value: openddil-sensor-ingest-edge-capeverdant
