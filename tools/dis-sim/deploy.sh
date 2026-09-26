@@ -9,16 +9,17 @@
 set -euo pipefail
 NS="${1:-openddil}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-IMAGE="${DIS_SIM_IMAGE:-openddil/dis-sim:1.0}"
+IMAGE="${DIS_SIM_IMAGE:-ghcr.io/edgy-solutions/openddil/dis-sim:1.0}"
 
-# The image carries opendis; nothing pulls it from a registry because there
-# is none. Say so HERE, where the fix is one command away, rather than
-# leaving it to be read off an ImagePullBackOff later.
+# The image is in GHCR, so a cluster with egress pulls it and this is nothing
+# to worry about. It is worth saying anyway for the air-gapped case, where
+# the pull fails and the answer is the mirror -- read off a line here rather
+# than off an ImagePullBackOff twenty minutes later.
 if command -v docker >/dev/null 2>&1 && ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  echo "WARNING: $IMAGE is not in the local docker daemon."
-  echo "         Run ./build.sh --load first, or make sure the cluster's"
-  echo "         nodes already have it. Continuing anyway -- a remote"
-  echo "         cluster may well have it without this machine knowing."
+  echo "NOTE: $IMAGE is not in the local docker daemon."
+  echo "      Fine on a cluster that can reach ghcr.io. In an air gap, the"
+  echo "      image has to come from the mirror (it is in the openddil-helm"
+  echo "      inventory), or from ./build.sh --load on a node."
   echo
 fi
 

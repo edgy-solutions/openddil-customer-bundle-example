@@ -8,19 +8,26 @@
 # NOT in it -- deploy.sh mounts that from a ConfigMap so there is exactly one
 # copy of the generator. See Dockerfile for why the split falls there.
 #
-# WHY YOU HAVE TO DO THIS AT ALL
-# ------------------------------
-# There is no registry behind `openddil/dis-sim`. Nothing pushes it, so the
-# kubelet cannot pull it, so it has to already be on the node. That is the
-# price of the image not depending on PyPI at start, and it is the right way
-# round: a build you run once beats a network call every container start.
+# WHAT THIS IS FOR, NOW THAT THE IMAGE IS PUBLISHED
+# -------------------------------------------------
+# openddil-helm's build-bundle workflow builds this same Dockerfile and
+# pushes it to ghcr.io/edgy-solutions/openddil/dis-sim, so a cluster can pull
+# it and an air-gapped site gets it from the mirror inventory with the chart's
+# other images. Running this script is no longer a prerequisite for deploying.
+#
+# It is how you iterate on the Dockerfile without waiting for CI. It builds
+# the SAME ref CI publishes, on purpose: with imagePullPolicy IfNotPresent, a
+# local build shadows the registry copy on this machine and nothing else has
+# to change. The cost of that is the other direction -- a stale local build
+# also shadows a newer published one, so `docker rmi` it when you are done
+# testing a change you did not push.
 #
 # --load copies it into a local cluster's node. Without a local cluster
-# runtime it is a no-op with a warning rather than an error, because on a
-# real cluster the image gets there some other way.
+# runtime it is a no-op with a warning rather than an error: on a real cluster
+# the kubelet now pulls it.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-IMAGE="${DIS_SIM_IMAGE:-openddil/dis-sim:1.0}"
+IMAGE="${DIS_SIM_IMAGE:-ghcr.io/edgy-solutions/openddil/dis-sim:1.0}"
 
 echo "building $IMAGE"
 docker build -t "$IMAGE" "$HERE"
@@ -54,8 +61,10 @@ if [[ "${1:-}" == "--load" ]]; then
     done
   else
     echo "  WARNING: no local kind/minikube/k3d cluster found; nothing loaded."
-    echo "  On a real cluster, get $IMAGE onto the nodes by whatever means"
-    echo "  that cluster uses, or the pods will ImagePullBackOff."
+    echo "  Not necessarily a problem: a real cluster pulls $IMAGE from"
+    echo "  GHCR (or from its mirror). It only matters if you were testing a"
+    echo "  local change, which is now unpublished and nowhere the cluster"
+    echo "  can see."
   fi
 fi
 
