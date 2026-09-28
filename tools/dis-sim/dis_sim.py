@@ -196,6 +196,26 @@ _LAB_EDGE = [
 DEFAULT_ENTITY_PLATFORMS: dict[str, str] = {
     **{f"dis:1:1:{1000 + i}": v for i, v in enumerate(_LAB_EDGE)},
     **{f"dis:2:1:{1000 + i}": v for i, v in enumerate(_LAB_EDGE[:6])},
+    # THE UNDECLARED ID. Pinned here and deliberately ABSENT from
+    # ontology/releasability.yaml, which is the whole of its job: it is a
+    # well-formed asset of a known platform that no declaration covers, so the
+    # egress gate must refuse it `unlabelled` rather than admit it or refuse it
+    # for a nation reason.
+    #
+    # Site 1 ON PURPOSE. Site 1 is the ATL fleet's site, so this id looks like
+    # an asset that belongs and was simply never declared -- which is the case
+    # that actually occurs. A deliberately foreign site would test a different
+    # and easier thing, because a reader would expect it to be refused.
+    #
+    # Entity 1099, not 1008: a contiguous id would be indistinguishable from
+    # the emitted fleet growing by one, and the gap is what makes it legible in
+    # a log as a thing that was added on purpose.
+    #
+    # Pinning it is NOT declaring it. The platform map says what an id IS; the
+    # releasability declaration says who may SEE it. Keeping the two separate is
+    # the point -- an asset can be perfectly well identified and still carry no
+    # releasability label, and that is exactly the record this fixture makes.
+    "dis:1:1:1099": "HMMWV-M1151A1",
 }
 
 
@@ -404,15 +424,29 @@ def appearance_bits(domain: int,
 class Entity:
     """One emitting entity. Drifts slowly so positions are not static."""
 
-    def __init__(self, index: int, site_id: int, app_id: int, rng: random.Random):
+    def __init__(self, index: int, site_id: int, app_id: int, rng: random.Random,
+                 entity_id: int | None = None):
         self.site_id = site_id
         self.app_id = app_id
-        self.entity_id = 1000 + index
+        # `1000 + index` is the default and stays the default: the contiguous
+        # fleet is what almost every run wants. An explicit id is for the runs
+        # that need a SPECIFIC asset id -- a fixture that has to be recognisable
+        # by id downstream, where "the ninth entity" would not identify it.
+        self.entity_id = (1000 + index) if entity_id is None else entity_id
         self.entity_type, self.variant = platform_for(site_id, app_id, self.entity_id)
 
-        stem = CALLSIGN_STEMS[index % len(CALLSIGN_STEMS)]
+        # The marking follows the ENTITY ID, not the position in the list. For
+        # the contiguous fleet the two are the same number -- entity_id is
+        # 1000 + index there -- so this changes no existing run. It matters only
+        # for an explicit id, where deriving from the position would hand the
+        # first explicit entity the same marking as the first entity of every
+        # other sim, and a fixture that shares a callsign with a fleet asset is
+        # not recognisable on an overlay, which is the whole reason it was given
+        # a specific id.
+        slot = self.entity_id - 1000
+        stem = CALLSIGN_STEMS[slot % len(CALLSIGN_STEMS)]
         # DIS marking is 11 bytes + a charset byte; keep it short and ASCII.
-        self.marking = f"{stem[:7]}-{index % 100:02d}"[:11]
+        self.marking = f"{stem[:7]}-{slot % 100:02d}"[:11]
 
         self.lat = BASE_LAT_DEG + rng.uniform(-SPREAD_DEG, SPREAD_DEG)
         self.lon = BASE_LON_DEG + rng.uniform(-SPREAD_DEG, SPREAD_DEG)
@@ -549,6 +583,17 @@ def main() -> int:
                    help="destination host (sensor-ingest)")
     p.add_argument("--port", type=int, default=int(os.getenv("DIS_TARGET_PORT", "62040")))
     p.add_argument("--entities", type=int, default=int(os.getenv("DIS_ENTITIES", "8")))
+    # Explicit entity ids, comma separated. When given, this REPLACES the
+    # contiguous `1000..1000+N-1` fleet rather than adding to it, and
+    # --entities is ignored -- an id list that silently also emitted eight
+    # other assets would make a single-asset fixture impossible to state.
+    #
+    # Every id still has to be pinned in the platform map; platform_for()
+    # refuses an unpinned id at start-up, and that refusal is load-bearing here
+    # (see DEFAULT_ENTITY_PLATFORMS).
+    p.add_argument("--entity-ids", default=os.getenv("DIS_ENTITY_IDS", ""),
+                   help="Comma-separated entity ids to emit INSTEAD of the "
+                        "contiguous default fleet, e.g. '1099'.")
     p.add_argument("--interval", type=float, default=float(os.getenv("DIS_INTERVAL_S", "5.0")),
                    help="heartbeat seconds per entity (VR-Forces default is ~5s)")
     p.add_argument("--exercise-id", type=int, default=int(os.getenv("DIS_EXERCISE_ID", "1")))
@@ -602,7 +647,20 @@ def main() -> int:
         return 0
 
     rng = random.Random(args.seed)
-    entities = [Entity(i, args.site_id, args.app_id, rng) for i in range(args.entities)]
+    explicit_ids: list[int] = []
+    for tok in (t.strip() for t in args.entity_ids.split(",")):
+        if not tok:
+            continue
+        if not tok.isdigit():
+            raise SystemExit(f"--entity-ids: {tok!r} is not an entity number")
+        explicit_ids.append(int(tok))
+    if explicit_ids:
+        print(f"dis-sim: emitting {len(explicit_ids)} explicit entity id(s): "
+              f"{explicit_ids} (--entities ignored)", flush=True)
+        entities = [Entity(i, args.site_id, args.app_id, rng, entity_id=eid)
+                    for i, eid in enumerate(explicit_ids)]
+    else:
+        entities = [Entity(i, args.site_id, args.app_id, rng) for i in range(args.entities)]
 
     # Apply the damage profile, if the operator asked for one. Without
     # --damage nothing changes and appearance stays 0 -- silence, not health.
