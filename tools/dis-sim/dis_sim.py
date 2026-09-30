@@ -69,7 +69,7 @@ import time
 from io import BytesIO
 
 try:
-    from opendis.dis7 import EntityStatePdu
+    from opendis.dis7 import EntityStatePdu, RemoveEntityPdu
     from opendis.DataOutputStream import DataOutputStream
 except ImportError:  # pragma: no cover
     sys.stderr.write(
@@ -315,6 +315,28 @@ def geodetic_to_ecef(lat_deg: float, lon_deg: float, alt_m: float) -> tuple[floa
 # beyond exercising our own pipeline.
 DAMAGE_LEVELS = {"none": 0, "slight": 1, "moderate": 2, "destroyed": 3}
 
+# ADR-0044 slice A: three per-asset damage-map values that are NOT damage
+# levels at all -- they are lifecycle states, not appearance claims about a
+# still-present entity. Kept as a separate tuple rather than folded into
+# DAMAGE_LEVELS (which also validates --damage, a fleet-wide DAMAGE profile
+# that has no business offering "removed" as a level every entity could
+# share) because "removed" in particular has no bit-field encoding at all --
+# it is a second PDU type, not a value of entityAppearance.
+#   "deactivated" -- sets the appearance deactivated bit (ontology's
+#       dis_appearance.yaml:66 land / :82 air -- `deactivated: { bit: 22 }`)
+#       IN ADDITION to whatever damage level already applies. Reversible:
+#       clearing the map entry restores the baseline, same contract as a
+#       damage level.
+#   "silent" -- stops ESPDU transmission for that entity outright; no
+#       appearance claim is made or changed. Reversible, same as above.
+#   "removed" -- sends exactly one Remove Entity PDU for that entity, then
+#       behaves like "silent" forever after. NOT reversible: a Remove Entity
+#       PDU is DIS's own terminal signal for "this entity is gone", and
+#       undoing it for real would need a Create Entity PDU, which this
+#       generator -- "no physics, no behaviours, no scenario model" -- does
+#       not emit. Clearing the map entry does not bring the entity back.
+LIFECYCLE_OVERRIDES = ("unspecified", "deactivated", "silent", "removed")
+
 
 # ---------------------------------------------------------------------------
 # PER-ASSET DAMAGE CONTROL — the injection lever, on the wire
@@ -381,10 +403,10 @@ def reload_damage_map(path: str) -> dict[str, str]:
         out: dict[str, str] = {}
         for k, v in raw.items():
             level = str(v).lower()
-            if level not in DAMAGE_LEVELS and level != "unspecified":
+            if level not in DAMAGE_LEVELS and level not in LIFECYCLE_OVERRIDES:
                 LOG.warning("damage map: %r has unknown level %r; skipping "
-                            "(valid: %s, unspecified)", k, v,
-                            "|".join(DAMAGE_LEVELS))
+                            "(valid: %s, %s)", k, v,
+                            "|".join(DAMAGE_LEVELS), "|".join(LIFECYCLE_OVERRIDES))
                 continue
             out[str(k).strip()] = level
         _DAMAGE_MAP, _DAMAGE_MAP_MTIME = out, mtime
@@ -468,6 +490,15 @@ class Entity:
         self._baseline_damage = "none"
         self._baseline_emit = False
 
+        # ADR-0044 slice A lifecycle overrides (see LIFECYCLE_OVERRIDES).
+        # None of these are touched by the --damage profile or its baseline
+        # freeze below -- they are driven ONLY by --damage-map, and default
+        # off, same as emit_appearance.
+        self.deactivated = False  # appearance bit only; reversible
+        self.silent = False       # stop sending ESPDUs; reversible
+        self.removed = False      # stop sending ESPDUs; NOT reversible
+        self._removed_pdu_sent = False  # edge-detect: send Remove Entity once
+
     def apply_damage_override(self, damage_map: dict[str, str]) -> bool:
         """Apply a per-asset override from the declarative map, if present.
 
@@ -479,6 +510,14 @@ class Entity:
         from its fleet. `unspecified` turns emission off for that asset — a
         deliberate silence, and the reason the map has a value that is not a
         damage level at all.
+
+        ADR-0044 slice A adds three more non-damage-level values (see
+        LIFECYCLE_OVERRIDES): "deactivated" (appearance bit, reversible),
+        "silent" (stop transmitting, reversible), and "removed" (stop
+        transmitting, NOT reversible — see LIFECYCLE_OVERRIDES for why). This
+        method only sets state; main()'s loop is what actually sends or
+        withholds a PDU based on self.silent / self.removed, and sends the
+        one-shot Remove Entity PDU on the False -> True edge of self.removed.
         """
         for key in _damage_map_key(self.site_id, self.app_id, self.entity_id):
             level = (damage_map or {}).get(key)
@@ -488,9 +527,27 @@ class Entity:
                 # Say nothing about this asset. NOT the same as "none":
                 # none asserts undamaged, this asserts nothing at all.
                 self.emit_appearance = False
+                self.deactivated = False
+                self.silent = False
+            elif level == "deactivated":
+                # An ADDITIONAL claim layered on whatever damage already
+                # applies -- not a replacement for it.
+                self.deactivated = True
+                self.emit_appearance = True
+                self.silent = False
+            elif level == "silent":
+                # Not an appearance claim at all. Appearance state is left
+                # exactly as it is so it resumes unchanged when "silent" is
+                # cleared.
+                self.silent = True
+            elif level == "removed":
+                # See LIFECYCLE_OVERRIDES: terminal, no baseline restore.
+                self.removed = True
             else:
                 self.damage = level
                 self.emit_appearance = True
+                self.deactivated = False
+                self.silent = False
             return True
 
         # NO ENTRY FOR THIS ENTITY -> RESTORE THE BASELINE.
@@ -508,6 +565,11 @@ class Entity:
         # to an invented "undamaged".
         self.damage = self._baseline_damage
         self.emit_appearance = self._baseline_emit
+        # "deactivated" and "silent" restore to baseline-off on omission too,
+        # the same declarative contract as damage. "removed" is deliberately
+        # NOT reset here -- see LIFECYCLE_OVERRIDES.
+        self.deactivated = False
+        self.silent = False
         return False
 
     def step(self, dt_s: float) -> None:
@@ -535,6 +597,7 @@ class Entity:
                 damage=self.damage,
                 mobility_kill=self.mobility_kill,
                 firepower_kill=self.firepower_kill,
+                deactivated=self.deactivated,
             )
             if self.emit_appearance else 0
         )
@@ -570,8 +633,37 @@ class Entity:
         pdu.entityOrientation.phi = 0.0
         return pdu
 
+    def to_remove_entity_pdu(self, exercise_id: int, protocol_version: int) -> RemoveEntityPdu:
+        """The one Remove Entity PDU sent when this entity's damage-map entry
+        becomes "removed" (ADR-0044 slice A, LIFECYCLE_OVERRIDES).
 
-def serialize(pdu: EntityStatePdu) -> bytes:
+        originatingEntityID is this sim's own site/application with entity 0
+        -- the SIM is the originator of the removal, not the entity being
+        removed, and entity 0 is DIS's convention for "no specific entity" on
+        that side. receivingEntityID is the entity being removed.
+
+        Layout/semantics taken from Open-DIS's RemoveEntityPdu, same caveat as
+        dis_ingestor.py's _extract_remove_entity() and appearance_bits()
+        above: not independently verified against the published IEEE 1278.1
+        text.
+        """
+        pdu = RemoveEntityPdu()
+        pdu.protocolVersion = protocol_version
+        pdu.exerciseID = exercise_id
+        pdu.pduType = 12        # Remove Entity
+        pdu.protocolFamily = 5  # Simulation Management
+        pdu.pduStatus = 0
+        pdu.originatingEntityID.siteID = self.site_id
+        pdu.originatingEntityID.applicationID = self.app_id
+        pdu.originatingEntityID.entityID = 0
+        pdu.receivingEntityID.siteID = self.site_id
+        pdu.receivingEntityID.applicationID = self.app_id
+        pdu.receivingEntityID.entityID = self.entity_id
+        pdu.requestID = 0
+        return pdu
+
+
+def serialize(pdu: EntityStatePdu | RemoveEntityPdu) -> bytes:
     bio = BytesIO()
     pdu.serialize(DataOutputStream(bio))
     return bio.getvalue()
@@ -610,10 +702,15 @@ def main() -> int:
                    help="Path to a JSON file of per-asset damage overrides, "
                         "re-read every tick: {\"dis:1:1:1005\": \"moderate\"}. "
                         "Keys accept the canonical dis:site:app:entity or a "
-                        "bare entity number; values are a damage level or "
-                        "\"unspecified\" to emit NO claim for that asset. A "
-                        "per-asset entry overrides --damage. Absent file "
-                        "changes nothing.")
+                        "bare entity number; values are a damage level, "
+                        "\"unspecified\" to emit NO claim for that asset, "
+                        "\"deactivated\" to additionally set the appearance "
+                        "deactivated bit, \"silent\" to stop transmitting that "
+                        "entity's ESPDUs, or \"removed\" to send one Remove "
+                        "Entity PDU and then stop transmitting for good "
+                        "(NOT reversible by clearing the entry). A per-asset "
+                        "entry overrides --damage. Absent file changes "
+                        "nothing.")
     p.add_argument("--damage-fraction", type=float,
                    default=float(os.getenv("DIS_DAMAGE_FRACTION", "1.0")),
                    help="Fraction of entities that carry the --damage level; "
@@ -716,13 +813,33 @@ def main() -> int:
                 if e.apply_damage_override(dmap):
                     now_overridden.add(e.entity_id)
                 e.step(per_entity_gap)
-                try:
-                    sock.sendto(serialize(e.to_pdu(args.exercise_id, args.protocol_version)),
-                                (args.host, args.port))
-                    sent += 1
-                except OSError as exc:
-                    errors += 1
-                    LOG.warning("send failed: %s", exc)
+                # ADR-0044 slice A: "removed" fires exactly once, on the
+                # False -> True edge of e.removed, regardless of how many
+                # ticks the map keeps saying "removed" afterwards.
+                if e.removed and not e._removed_pdu_sent:
+                    try:
+                        sock.sendto(
+                            serialize(e.to_remove_entity_pdu(args.exercise_id, args.protocol_version)),
+                            (args.host, args.port),
+                        )
+                        LOG.info("entity %d: sent Remove Entity PDU; ESPDUs stop", e.entity_id)
+                    except OSError as exc:
+                        errors += 1
+                        LOG.warning("remove-entity send failed for entity %d: %s", e.entity_id, exc)
+                    e._removed_pdu_sent = True
+                # "silent" and "removed" both withhold the ESPDU outright --
+                # this is the one line that changes shape for the default
+                # (no --damage-map) run, and for that run e.silent and
+                # e.removed are always False, so the condition is always
+                # True and behaviour is unchanged.
+                if not (e.silent or e.removed):
+                    try:
+                        sock.sendto(serialize(e.to_pdu(args.exercise_id, args.protocol_version)),
+                                    (args.host, args.port))
+                        sent += 1
+                    except OSError as exc:
+                        errors += 1
+                        LOG.warning("send failed: %s", exc)
                 time.sleep(per_entity_gap)
             if now_overridden != overridden:
                 # Log the CHANGE, not the state: a line every tick would bury
