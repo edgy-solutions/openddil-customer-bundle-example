@@ -373,12 +373,84 @@ LIFECYCLE_OVERRIDES = ("unspecified", "deactivated", "silent", "removed")
 # generator down mid-run. That is the opposite of the enumeration list's
 # fail-loudly rule, and deliberately so — a scenario list is read once at
 # start-up where stopping is cheap, this is read every tick where it is not.
+#
+# --destroy-schedule IS A TIMED DEFAULT, NOT A SECOND LIVE CONTROL. It is a
+# CLI value (or DIS_DESTROY_SCHEDULE), parsed ONCE at start-up like the
+# --damage profile, not re-read from disk like --damage-map. Entries are
+# `ASSET@SECONDS` (seconds since process start; float ok), comma-separated,
+# ASSET in the same key forms --damage-map accepts (see _damage_map_key).
+# Once an entry's time has elapsed, that asset's damage is "destroyed" and
+# it KEEPS transmitting ESPDUs — ADR-0044: destroyed + reporting is a real
+# state, same thesis as LIFECYCLE_OVERRIDES above, just reached on a timer
+# instead of an operator edit. One-shot: because elapsed time only grows for
+# the life of one process, recomputing "has it fired" every tick from
+# elapsed-vs-target IS the one-shot behaviour, with no separate state to
+# drift — a restart zeroes elapsed time and replays the whole schedule.
+# PRECEDENCE: an explicit --damage-map entry for the same asset WINS over the
+# schedule every tick, same as --damage-map wins over nothing special here —
+# the schedule is only consulted when apply_damage_override() reports no
+# override is active this tick. Malformed entries are logged and skipped,
+# same contract as the damage map, since this is also an operator-facing
+# value that must not take a demo down over a typo.
 _DAMAGE_MAP: dict[str, str] = {}
 _DAMAGE_MAP_MTIME: float | None = None
 
 
 def _damage_map_key(site: int, app: int, entity: int) -> tuple[str, str]:
     return (f"dis:{site}:{app}:{entity}", str(entity))
+
+
+def parse_destroy_schedule(spec: str) -> dict[str, float]:
+    """Parse `--destroy-schedule` / `DIS_DESTROY_SCHEDULE` into asset -> seconds.
+
+    Format: comma-separated `ASSET@SECONDS`, ASSET in either key form
+    `_damage_map_key` produces (canonical `dis:site:app:entity` or a bare
+    entity number), SECONDS a float count of seconds since process start.
+
+    Malformed entries are logged and SKIPPED, not fatal — same contract as
+    `reload_damage_map`: an operator-facing value, and a typo must not take
+    the generator down.
+    """
+    schedule: dict[str, float] = {}
+    for tok in (t.strip() for t in (spec or "").split(",")):
+        if not tok:
+            continue
+        if "@" not in tok:
+            LOG.warning("destroy schedule: %r missing '@ASSET@SECONDS'; skipping", tok)
+            continue
+        asset, _, secs = tok.partition("@")
+        asset = asset.strip()
+        secs = secs.strip()
+        if not asset:
+            LOG.warning("destroy schedule: %r has an empty asset; skipping", tok)
+            continue
+        try:
+            seconds = float(secs)
+        except ValueError:
+            LOG.warning("destroy schedule: %r has a non-numeric time %r; skipping", tok, secs)
+            continue
+        if seconds < 0:
+            LOG.warning("destroy schedule: %r has a negative time; skipping", tok)
+            continue
+        schedule[asset] = seconds
+    return schedule
+
+
+def resolve_destroy_schedule(entities: list[Entity], schedule: dict[str, float]) -> None:
+    """Match each entity against a parsed --destroy-schedule, if any.
+
+    Logged once per matched entity here, at start-up, so an operator sees
+    the whole schedule before anything fires rather than discovering it
+    piecemeal as entries fire. An entity with no matching key is untouched
+    (its destroy_at_s stays None and the schedule never applies to it).
+    """
+    for e in entities:
+        for key in _damage_map_key(e.site_id, e.app_id, e.entity_id):
+            if key in schedule:
+                e.destroy_at_s = schedule[key]
+                LOG.info("destroy schedule: dis:%d:%d:%d at t+%gs",
+                         e.site_id, e.app_id, e.entity_id, e.destroy_at_s)
+                break
 
 
 def reload_damage_map(path: str) -> dict[str, str]:
@@ -499,6 +571,13 @@ class Entity:
         self.removed = False      # stop sending ESPDUs; NOT reversible
         self._removed_pdu_sent = False  # edge-detect: send Remove Entity once
 
+        # --destroy-schedule (see resolve_destroy_schedule / apply_destroy_schedule):
+        # the elapsed-seconds-since-start at which this entity becomes a
+        # one-shot "destroyed" claim, or None when nothing in the schedule
+        # matches this entity's id.
+        self.destroy_at_s: float | None = None
+        self._destroy_logged = False  # edge-detect: log the fire once, not every tick
+
     def apply_damage_override(self, damage_map: dict[str, str]) -> bool:
         """Apply a per-asset override from the declarative map, if present.
 
@@ -571,6 +650,34 @@ class Entity:
         self.deactivated = False
         self.silent = False
         return False
+
+    def apply_destroy_schedule(self, elapsed_s: float) -> bool:
+        """One-shot scheduled destroy claim (see --destroy-schedule).
+
+        Call this ONLY when `apply_damage_override` reported no live
+        override for this tick — an explicit --damage-map entry for this
+        asset always wins over the schedule (the operator lever is live
+        control; the schedule is a timed default).
+
+        Encodes the claim exactly the way a literal "destroyed" --damage-map
+        entry does (see the `else` branch of apply_damage_override): damage
+        level + emit_appearance, which is also what sets the power-plant bit
+        at PDU-encode time — no new encoding is invented here.
+
+        No persisted "fired" flag drives the claim itself: elapsed_s only
+        grows for the life of one process, so recomputing "elapsed_s >=
+        destroy_at_s" every tick already IS one-shot-and-never-reverts, and a
+        process restart (elapsed_s back to 0) is the only way to replay it —
+        exactly the contract the spec calls for. Returns True while the
+        schedule is in effect, so the caller can log the transition once.
+        """
+        if self.destroy_at_s is None or elapsed_s < self.destroy_at_s:
+            return False
+        self.damage = "destroyed"
+        self.emit_appearance = True
+        self.deactivated = False
+        self.silent = False
+        return True
 
     def step(self, dt_s: float) -> None:
         # Crude flat-earth step. Adequate: nothing downstream does geodesy on
@@ -711,6 +818,17 @@ def main() -> int:
                         "(NOT reversible by clearing the entry). A per-asset "
                         "entry overrides --damage. Absent file changes "
                         "nothing.")
+    p.add_argument("--destroy-schedule", default=os.getenv("DIS_DESTROY_SCHEDULE", ""),
+                   help="Comma-separated ASSET@SECONDS: once SECONDS have "
+                        "elapsed since process start, mark ASSET destroyed "
+                        "and keep transmitting its ESPDUs (ADR-0044: "
+                        "destroyed + reporting is a real state). ASSET "
+                        "accepts the same forms as --damage-map "
+                        "(dis:site:app:entity or a bare entity number). "
+                        "One-shot: never reverts while this process runs; "
+                        "a restart replays the schedule from zero. An "
+                        "explicit --damage-map entry for the same asset "
+                        "wins over the schedule.")
     p.add_argument("--damage-fraction", type=float,
                    default=float(os.getenv("DIS_DAMAGE_FRACTION", "1.0")),
                    help="Fraction of entities that carry the --damage level; "
@@ -783,6 +901,12 @@ def main() -> int:
         ent._baseline_damage = ent.damage
         ent._baseline_emit = ent.emit_appearance
 
+    # --destroy-schedule: parsed and matched once at start-up (unlike
+    # --damage-map, this is not re-read from disk every tick).
+    destroy_schedule = parse_destroy_schedule(args.destroy_schedule)
+    if destroy_schedule:
+        resolve_destroy_schedule(entities, destroy_schedule)
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
@@ -802,16 +926,23 @@ def main() -> int:
     per_entity_gap = args.interval / max(len(entities), 1)
 
     overridden: set[int] = set()
+    start_s = time.monotonic()
     try:
         while True:
             # Re-read the per-asset control once per sweep, not per entity:
             # one stat() per tick, and every entity in a sweep sees the same
             # desired state rather than a file that changed mid-loop.
             dmap = reload_damage_map(args.damage_map)
+            elapsed_s = time.monotonic() - start_s
             now_overridden = set()
             for e in entities:
                 if e.apply_damage_override(dmap):
                     now_overridden.add(e.entity_id)
+                elif e.apply_destroy_schedule(elapsed_s) and not e._destroy_logged:
+                    # Logged once on the fire, not every tick thereafter.
+                    LOG.info("destroy schedule fired: dis:%d:%d:%d",
+                             e.site_id, e.app_id, e.entity_id)
+                    e._destroy_logged = True
                 e.step(per_entity_gap)
                 # ADR-0044 slice A: "removed" fires exactly once, on the
                 # False -> True edge of e.removed, regardless of how many
