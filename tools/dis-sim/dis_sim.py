@@ -69,7 +69,7 @@ import time
 from io import BytesIO
 
 try:
-    from opendis.dis7 import EntityStatePdu, RemoveEntityPdu
+    from opendis.dis7 import EntityStatePdu, RemoveEntityPdu, EventReportPdu, FixedDatum, VariableDatum
     from opendis.DataOutputStream import DataOutputStream
 except ImportError:  # pragma: no cover
     sys.stderr.write(
@@ -770,7 +770,182 @@ class Entity:
         return pdu
 
 
-def serialize(pdu: EntityStatePdu | RemoveEntityPdu) -> bytes:
+# ---------------------------------------------------------------------------
+# Scheduled Event Report PDUs — DIS_EVENT_SCHEDULE_PATH
+# ---------------------------------------------------------------------------
+# PURE TRANSPORT. This sim sends what its schedule says; it does not know,
+# and this file does not encode, what any event_type or datum id MEANS.
+# That interpretation is configuration elsewhere, in a later build — the
+# same separation ENTITY_TYPES/ENTITY_PLATFORMS above draw between "what
+# platform is this" and "who may see it".
+#
+# Unset DIS_EVENT_SCHEDULE_PATH -> load_event_schedule returns [] and
+# nothing about an existing run changes: no new PDUs, and no new startup
+# log line (print only happens when a path was actually given, same
+# contract as load_entity_types/load_entity_platforms above).
+#
+# FAILS LOUDLY, UNLIKE THE DAMAGE MAP. reload_damage_map above skips a bad
+# entry because it is re-read live, mid-demo, where stopping the process
+# over a typo would be worse than ignoring one line. This file is read
+# ONCE at start-up, same as DIS_ENTITY_TYPES_PATH/DIS_ENTITY_PLATFORMS_PATH
+# — so a bad entry stops the whole sim rather than silently never firing.
+_UINT32_MAX = 0xFFFFFFFF
+
+
+def _schedule_uint32_key(key: object, path: str, index: int, field: str) -> int:
+    try:
+        value = int(str(key))
+    except (TypeError, ValueError):
+        raise SystemExit(f"{path}[{index}]: {field} key {key!r} is not an integer")
+    if not (0 <= value <= _UINT32_MAX):
+        raise SystemExit(f"{path}[{index}]: {field} key {key!r} is not a uint32")
+    return value
+
+
+def load_event_schedule(path: str | None, valid_entity_ids: set[int]) -> list[dict]:
+    """Validate and return the DIS_EVENT_SCHEDULE_PATH schedule.
+
+    `valid_entity_ids` is the set of entity ids THIS RUN will actually
+    emit (the contiguous fleet or an explicit --entity-ids list) -- not the
+    platform map or any ontology -- because a schedule entry for an id this
+    process never emits would silently never fire.
+
+    Any violation exits non-zero, naming the entry's index, and does NOT
+    skip just that entry: a schedule that was supplied and then partially
+    ignored is the worst outcome, same reasoning as load_entity_types'
+    docstring.
+    """
+    path = path or os.getenv("DIS_EVENT_SCHEDULE_PATH", "").strip()
+    if not path:
+        return []
+    with open(path, encoding="utf-8") as fh:
+        raw = json.load(fh)
+    if not isinstance(raw, list):
+        raise SystemExit(f"{path}: expected a JSON list of event schedule entries")
+
+    out: list[dict] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise SystemExit(f"{path}[{i}]: expected an object")
+
+        entity = item.get("entity")
+        if not isinstance(entity, int) or isinstance(entity, bool):
+            raise SystemExit(f"{path}[{i}]: 'entity' must be an int")
+        if entity not in valid_entity_ids:
+            raise SystemExit(
+                f"{path}[{i}]: entity {entity} is not one of the ids this sim "
+                f"emits ({sorted(valid_entity_ids)})"
+            )
+
+        at_s = item.get("at_s")
+        if isinstance(at_s, bool) or not isinstance(at_s, (int, float)) or at_s < 0:
+            raise SystemExit(f"{path}[{i}]: 'at_s' must be a number >= 0")
+
+        event_type = item.get("event_type")
+        if (isinstance(event_type, bool) or not isinstance(event_type, int)
+                or not (0 <= event_type <= _UINT32_MAX)):
+            raise SystemExit(f"{path}[{i}]: 'event_type' must be a uint32")
+
+        variable_datums_raw = item.get("variable_datums")
+        if not isinstance(variable_datums_raw, dict):
+            raise SystemExit(f"{path}[{i}]: 'variable_datums' must be an object")
+        variable_datums: dict[int, str] = {}
+        for k, v in variable_datums_raw.items():
+            did = _schedule_uint32_key(k, path, i, "variable_datums")
+            if not isinstance(v, str):
+                raise SystemExit(f"{path}[{i}]: variable_datums[{k!r}] must be a string")
+            if len(v.encode("utf-8")) > 255:
+                raise SystemExit(f"{path}[{i}]: variable_datums[{k!r}] exceeds 255 bytes")
+            variable_datums[did] = v
+
+        fixed_datums_raw = item.get("fixed_datums") or {}
+        if not isinstance(fixed_datums_raw, dict):
+            raise SystemExit(f"{path}[{i}]: 'fixed_datums' must be an object")
+        fixed_datums: dict[int, int] = {}
+        for k, v in fixed_datums_raw.items():
+            did = _schedule_uint32_key(k, path, i, "fixed_datums")
+            if (isinstance(v, bool) or not isinstance(v, int)
+                    or not (0 <= v <= _UINT32_MAX)):
+                raise SystemExit(f"{path}[{i}]: fixed_datums[{k!r}] must be a uint32")
+            fixed_datums[did] = v
+
+        repeat_s = item.get("repeat_s")
+        if repeat_s is not None:
+            if (isinstance(repeat_s, bool) or not isinstance(repeat_s, (int, float))
+                    or repeat_s <= 0):
+                raise SystemExit(f"{path}[{i}]: 'repeat_s' must be a number > 0")
+
+        out.append({
+            "entity": entity,
+            "at_s": float(at_s),
+            "event_type": event_type,
+            "fixed_datums": fixed_datums,
+            "variable_datums": variable_datums,
+            "repeat_s": float(repeat_s) if repeat_s is not None else None,
+        })
+
+    print(f"dis-sim: loaded {len(out)} event schedule entr"
+          f"{'y' if len(out) == 1 else 'ies'} from {path}", flush=True)
+    return out
+
+
+def due_schedule_entries(schedule: list[dict], next_due: list[float | None],
+                         elapsed_s: float) -> list[int]:
+    """Indices of `schedule` entries due to fire at `elapsed_s`.
+
+    `next_due` is a same-length, caller-owned list of next-fire times
+    (None once a one-shot entry has fired and will not fire again); this
+    function advances it in place. Injecting `elapsed_s` as a plain float
+    argument -- rather than reading a clock itself -- is what lets a test
+    pass synthetic values directly, same contract as
+    Entity.apply_destroy_schedule(elapsed_s).
+    """
+    fired: list[int] = []
+    for i, entry in enumerate(schedule):
+        due = next_due[i]
+        if due is None or elapsed_s < due:
+            continue
+        fired.append(i)
+        repeat_s = entry.get("repeat_s")
+        next_due[i] = due + repeat_s if repeat_s else None
+    return fired
+
+
+def event_report_pdu(entity: Entity, entry: dict, exercise_id: int,
+                     protocol_version: int) -> EventReportPdu:
+    """One Event Report PDU (type 21) for one fired schedule entry.
+
+    originatingEntityID is the entity the schedule entry names, site/app as
+    this sim's own (same convention as to_remove_entity_pdu). receivingEntityID
+    is left at Open-DIS's own all-zero EntityID(0, 0, 0) default: DIS has no
+    separate standard encoding for "no specific receiver", and all-zero is
+    this codebase's existing convention for an unaddressed party (see
+    to_remove_entity_pdu's originating entity 0 for "no specific entity").
+
+    PURE TRANSPORT: sends exactly what the schedule entry says. eventType
+    and the datum ids are opaque integers here, same as everywhere else in
+    this module's event-schedule code.
+    """
+    fixed = [FixedDatum(did, val) for did, val in entry["fixed_datums"].items()]
+    variable = []
+    for did, text in entry["variable_datums"].items():
+        data = list(text.encode("utf-8"))
+        variable.append(VariableDatum(did, len(data) * 8, data))
+
+    pdu = EventReportPdu(eventType=entry["event_type"], fixedDatumRecords=fixed,
+                         variableDatumRecords=variable)
+    pdu.protocolVersion = protocol_version
+    pdu.exerciseID = exercise_id
+    pdu.pduType = 21        # Event Report
+    pdu.protocolFamily = 5  # Simulation Management
+    pdu.pduStatus = 0
+    pdu.originatingEntityID.siteID = entity.site_id
+    pdu.originatingEntityID.applicationID = entity.app_id
+    pdu.originatingEntityID.entityID = entity.entity_id
+    return pdu
+
+
+def serialize(pdu: EntityStatePdu | RemoveEntityPdu | EventReportPdu) -> bytes:
     bio = BytesIO()
     pdu.serialize(DataOutputStream(bio))
     return bio.getvalue()
@@ -907,6 +1082,20 @@ def main() -> int:
     if destroy_schedule:
         resolve_destroy_schedule(entities, destroy_schedule)
 
+    # DIS_EVENT_SCHEDULE_PATH: validated once at start-up, same as the
+    # entity type/platform maps above -- a bad entry exits non-zero here
+    # rather than mid-run. Unset -> [] and nothing below ever fires, so an
+    # existing run's behaviour (and its startup log) is unchanged.
+    entities_by_id = {e.entity_id: e for e in entities}
+    event_schedule = load_event_schedule(None, set(entities_by_id))
+    event_schedule_next_due = [entry["at_s"] for entry in event_schedule]
+    for entry in event_schedule:
+        LOG.info(
+            "event schedule: entity %d event_type=%d at t+%gs%s",
+            entry["entity"], entry["event_type"], entry["at_s"],
+            f" every {entry['repeat_s']}s" if entry["repeat_s"] else "",
+        )
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
@@ -934,6 +1123,28 @@ def main() -> int:
             # desired state rather than a file that changed mid-loop.
             dmap = reload_damage_map(args.damage_map)
             elapsed_s = time.monotonic() - start_s
+
+            # Scheduled Event Report PDUs (DIS_EVENT_SCHEDULE_PATH), once per
+            # sweep -- not per entity, same cadence as the damage-map reload
+            # above. Pure transport: eventType and the datum ids are opaque
+            # integers here, never interpreted.
+            for idx in due_schedule_entries(event_schedule, event_schedule_next_due, elapsed_s):
+                entry = event_schedule[idx]
+                entity = entities_by_id[entry["entity"]]
+                pdu = event_report_pdu(entity, entry, args.exercise_id, args.protocol_version)
+                try:
+                    sock.sendto(serialize(pdu), (args.host, args.port))
+                    sent += 1
+                    LOG.info(
+                        "event report: entity=%d event_type=%d fixed_datum_ids=%s "
+                        "variable_datum_ids=%s", entity.entity_id, entry["event_type"],
+                        sorted(entry["fixed_datums"]), sorted(entry["variable_datums"]),
+                    )
+                except OSError as exc:
+                    errors += 1
+                    LOG.warning("event report send failed for entity %d: %s",
+                               entity.entity_id, exc)
+
             now_overridden = set()
             for e in entities:
                 if e.apply_damage_override(dmap):
