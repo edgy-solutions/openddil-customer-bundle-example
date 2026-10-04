@@ -1,0 +1,105 @@
+name: Contract B conformance
+
+# Runs the Contract B validator's own selftest: a well-formed replay must
+# be ACCEPTED, and a minimal red case must exist, and must REFUSE, for
+# every rule the validator knows about.
+#
+# This kit validates RECORDS, not a mock of the validator: the selftest
+# doesn't assert "the script ran without crashing," it asserts that each
+# rule id from --list-rules has a fixture under conformance/contract-b/
+# fixtures/refused/ that trips that rule and only that rule. The coverage
+# check inside selftest.sh fails loudly if a rule and its case ever drift
+# apart, in either direction.
+#
+# An empty run is exit 2, never a silent pass — so a suite that validated
+# nothing cannot read as a suite that validated everything.
+
+on:
+  push:
+    branches: [ "master" ]
+    paths:
+      - "conformance/contract-b/**"
+      - ".github/workflows/contract-b-conformance.yml"
+  pull_request:
+    branches: [ "master" ]
+    paths:
+      - "conformance/contract-b/**"
+      - ".github/workflows/contract-b-conformance.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --check-enums compares the validator's embedded vocabularies
+      # against the canonical .proto tree, which this kit deliberately
+      # does not vendor — a vendored copy is a snapshot that drifts, and a
+      # check run against a stale contract reports green for a vocabulary
+      # the real ingress no longer accepts.
+      #
+      # Public repo, so no token. If it ever goes private this step fails
+      # at checkout, loudly, rather than degrading into a silent skip.
+      - name: Check out the contracts proto tree
+        uses: actions/checkout@v4
+        with:
+          repository: edgy-solutions/openddil-contracts
+          # openddil-contracts is on `main`; this repo is on `master`.
+          ref: main
+          path: .contracts
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run the Contract B selftest
+        env:
+          OPENDDIL_PROTO_DIR: ${{ github.workspace }}/.contracts/proto
+        run: |
+          chmod +x conformance/contract-b/selftest.sh
+          # Output is teed rather than re-run: the assertions below read
+          # this file. Running the suite twice would double the cost and,
+          # worse, let the two runs disagree — the assertion must be about
+          # the run that decided the job, not about a second one.
+          set -o pipefail
+          OPENDDIL_PROTO_DIR="$OPENDDIL_PROTO_DIR" bash conformance/contract-b/selftest.sh | tee selftest.out
+
+      # A suite that silently validates nothing is worse than no suite.
+      # Assert on the OUTPUT, not on the script text — a regression that
+      # makes the summary line vanish, or makes it read short, is exactly
+      # what this step exists to catch.
+      - name: Assert the summary line and coverage
+        run: |
+          out="$(cat selftest.out)"
+          line="$(echo "$out" | grep '^contract-b selftest: ' || true)"
+          if [ -z "$line" ]; then
+            echo "::error::no summary line — the suite would have passed vacuously" >&2
+            exit 1
+          fi
+          echo "$line"
+
+          matched="$(echo "$line" | sed -n 's/.*red cases=\([0-9]*\)\/\([0-9]*\) matched.*/\1/p')"
+          total="$(echo "$line" | sed -n 's/.*red cases=\([0-9]*\)\/\([0-9]*\) matched.*/\2/p')"
+          uncovered="$(echo "$line" | sed -n 's/.*rules uncovered=\([0-9]*\).*/\1/p')"
+          enums="$(echo "$line" | sed -n 's/.*enums=\([a-z ]*\)$/\1/p')"
+
+          if [ -z "$total" ] || [ "$total" -lt 1 ]; then
+            echo "::error::the suite would have passed vacuously — total rule count is $total" >&2
+            exit 1
+          fi
+          if [ "$matched" != "$total" ]; then
+            echo "::error::red cases $matched/$total matched — not every rule has a working red case" >&2
+            exit 1
+          fi
+          if [ "$uncovered" != "0" ]; then
+            echo "::error::rules uncovered=$uncovered — a rule has no red case" >&2
+            exit 1
+          fi
+          if [ "$enums" != "in sync" ]; then
+            echo "::error::enums=$enums — the validator's vocabularies have drifted from the proto tree" >&2
+            exit 1
+          fi
