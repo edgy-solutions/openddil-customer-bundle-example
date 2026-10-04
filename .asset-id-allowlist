@@ -1,0 +1,4 @@
+# ADR-0047 exceptions, one per line, tab-separated: <path>	<substring on the line>	<reason>
+# The allowlist only shrinks: an entry that matches nothing fails the check.
+tools/dis-sim/dis_sim.py	"destroy schedule: dis:	source-sim: the DIS simulator logs the ids it emits
+tools/dis-sim/dis_sim.py	"destroy schedule fired: dis:	source-sim: the DIS simulator logs the ids it emits
