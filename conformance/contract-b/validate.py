@@ -4,7 +4,10 @@
 Validates records against the element-plane Contract B shape: the existing
 telemetry/inventory envelopes (see openddil-logistics-sim's publisher and
 openddil-projector's handlers) plus four additive blocks — sustainment_id,
-provenance (labels), extraction, extras — and operational.readiness.
+provenance (labels), extraction, extras — and operational.readiness. A third
+plane, "parts" (per-site spare-part stock on `parts-availability`, keyed by
+site + part rather than by asset), carries its own rules in place of the
+asset-identifier ones.
 
 This validates RECORDS, not a mock of them: every rule below has a minimal
 fixture under fixtures/refused/ that fails only that rule (see selftest.sh),
@@ -59,6 +62,11 @@ PLANE_FIELDS = {
         "available_count", "allocated_count", "total_count", "observed_at_ns",
         "provenance", "extraction", "extras",
     },
+    "parts": {
+        "site", "part_ref", "item", "on_hand", "lead_time_days", "source",
+        "nearest_site_with_stock", "nearest_on_hand", "observed_at_ns",
+        "provenance", "extraction", "extras",
+    },
 }
 
 LOWER_BOUND_NS = 946684800_000000000  # 2000-01-01T00:00:00Z
@@ -83,9 +91,10 @@ TELEMETRY_RULES = [
     "readiness_factor_mismatch", "readiness_health_conflict",
 ]
 INVENTORY_RULES = ["counts_invalid"]
+PARTS_RULES = ["part_invalid", "stock_invalid", "source_absent", "nearest_invalid"]
 STREAM_RULES = ["conflicting_duplicate", "order_regression"]
 
-ALL_RULES = GENERIC_RULES + TELEMETRY_RULES + INVENTORY_RULES + STREAM_RULES
+ALL_RULES = GENERIC_RULES + TELEMETRY_RULES + INVENTORY_RULES + PARTS_RULES + STREAM_RULES
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +177,8 @@ def resolve_plane(topic, record, plane_arg):
             return "telemetry"
         if "asset-element-inventory" in topic:
             return "inventory"
+        if "parts-availability" in topic:
+            return "parts"
     if plane_arg:
         return plane_arg
     if isinstance(record, dict):
@@ -175,6 +186,8 @@ def resolve_plane(topic, record, plane_arg):
             return "telemetry"
         if "layer_name" in record:
             return "inventory"
+        if "part_ref" in record:
+            return "parts"
     return None
 
 
@@ -188,6 +201,12 @@ def expected_key(plane, record):
         layer = record.get("layer_name")
         if isinstance(aid, str) and aid != "" and isinstance(layer, str) and layer != "":
             return f"{aid}:{layer}"
+        return None
+    if plane == "parts":
+        site = record.get("site")
+        part_ref = record.get("part_ref")
+        if isinstance(site, str) and site != "" and isinstance(part_ref, str) and part_ref != "":
+            return f"{site}:{part_ref}"
         return None
     return None
 
@@ -409,6 +428,47 @@ def check_counts(record, out):
         out.add("counts_invalid")
 
 
+def check_parts(record, out):
+    # The parts plane is keyed by site + part, not by asset: there is no
+    # asset_id/sustainment_id pair here, opaque or otherwise.
+    part_ref = record.get("part_ref")
+    bad_part = not is_nonempty_str(part_ref)
+    if "item" in record and not is_nonempty_str(record.get("item")):
+        bad_part = True
+    if bad_part:
+        out.add("part_invalid")
+
+    on_hand = record.get("on_hand")
+    bad_stock = not is_int_not_bool(on_hand) or on_hand < 0
+    if "lead_time_days" in record:
+        ltd = record.get("lead_time_days")
+        # An unknown lead time is ABSENT, never null or 0 — a source that
+        # cannot estimate lead time omits the key rather than guessing.
+        if not is_int_not_bool(ltd) or ltd < 0:
+            bad_stock = True
+    if bad_stock:
+        out.add("stock_invalid")
+
+    if not is_nonempty_str(record.get("source")):
+        out.add("source_absent")
+
+    if "nearest_site_with_stock" not in record:
+        out.add("nearest_invalid")
+    else:
+        nearest = record["nearest_site_with_stock"]
+        if nearest is None:
+            # No site in the source's own search order has stock: there is
+            # no count to report, so nearest_on_hand must be absent, not 0.
+            if "nearest_on_hand" in record:
+                out.add("nearest_invalid")
+        elif is_nonempty_str(nearest):
+            noh = record.get("nearest_on_hand")
+            if not is_int_not_bool(noh) or noh < 1:
+                out.add("nearest_invalid")
+        else:
+            out.add("nearest_invalid")
+
+
 # ---------------------------------------------------------------------------
 # Per-record validation. Returns the set of failing rule ids plus data for
 # summary tallies / stream tracking.
@@ -439,15 +499,19 @@ def validate_record(raw, plane_arg, readiness_mode, nations, now_ns):
 
     aid = record.get("asset_id")
     info["asset_id"] = aid if isinstance(aid, str) else None
-    if not asset_id_ok(aid):
-        fails.add("asset_id_invalid")
+    # The parts plane is keyed by site + part; it carries no asset_id or
+    # sustainment_id, opaque or otherwise, so none of the three
+    # asset-identifier rules apply to it.
+    if plane != "parts":
+        if not asset_id_ok(aid):
+            fails.add("asset_id_invalid")
 
-    sid = record.get("sustainment_id")
-    if not is_nonempty_str(sid):
-        fails.add("sustainment_id_absent")
-    if isinstance(sid, str) and sid == aid:
-        fails.add("identifier_collapsed")
-    info["both_ids"] = isinstance(aid, str) and aid != "" and is_nonempty_str(sid)
+        sid = record.get("sustainment_id")
+        if not is_nonempty_str(sid):
+            fails.add("sustainment_id_absent")
+        if isinstance(sid, str) and sid == aid:
+            fails.add("identifier_collapsed")
+        info["both_ids"] = isinstance(aid, str) and aid != "" and is_nonempty_str(sid)
 
     site = record.get("site")
     if not is_nonempty_str(site):
@@ -487,6 +551,8 @@ def validate_record(raw, plane_arg, readiness_mode, nations, now_ns):
                 info["readiness_status"] = status
     elif plane == "inventory":
         check_counts(record, fails)
+    elif plane == "parts":
+        check_parts(record, fails)
 
     return fails, record, info
 
@@ -494,7 +560,7 @@ def validate_record(raw, plane_arg, readiness_mode, nations, now_ns):
 def main(argv):
     p = argparse.ArgumentParser(prog="validate.py", add_help=True)
     p.add_argument("files", nargs="*", default=["-"], metavar="FILE")
-    p.add_argument("--plane", choices=["telemetry", "inventory"])
+    p.add_argument("--plane", choices=["telemetry", "inventory", "parts"])
     p.add_argument("--readiness", choices=["required", "optional"], default="required")
     p.add_argument("--nations")
     p.add_argument("--now-ns", type=int)
@@ -558,7 +624,7 @@ def main(argv):
 
     rule_counts = {r: 0 for r in ALL_RULES}
     accepted = refused = replayed = 0
-    plane_counts = {"telemetry": 0, "inventory": 0}
+    plane_counts = {"telemetry": 0, "inventory": 0, "parts": 0}
     assets = set()
     originators = set()
     labelled = 0
@@ -588,7 +654,7 @@ def main(argv):
             readiness_counts[status] += 1
 
         is_replay = False
-        if isinstance(record, dict) and info["plane"] in ("telemetry", "inventory") and info["asset_id"]:
+        if isinstance(record, dict) and info["plane"] in ("telemetry", "inventory", "parts"):
             exp = expected_key(info["plane"], record)
             obs = record.get("observed_at_ns")
             if exp is not None and is_int_not_bool(obs):
@@ -662,7 +728,8 @@ def emit(result, as_json):
         f"contract-b: records={result['records']} accepted={result['accepted']} "
         f"refused={result['refused']} replayed={result['replayed']} "
         f"assets={result['assets']} "
-        f"planes=telemetry:{planes.get('telemetry', 0)},inventory:{planes.get('inventory', 0)} "
+        f"planes=telemetry:{planes.get('telemetry', 0)},inventory:{planes.get('inventory', 0)},"
+        f"parts:{planes.get('parts', 0)} "
         f"keys_checked={result['keys_checked']}"
     )
     print("refused by rule:")

@@ -62,11 +62,11 @@ if [ "$good_rc" -ne 0 ]; then
   good_accepted=0
 else
   good_summary="$(jpy "f\"{d['records']},{d['accepted']},{d['refused']},{d['replayed']},{d['assets']}\"" "$good_json")"
-  if [ "$good_summary" = "25,25,0,1,6" ]; then
-    echo "  ok   records=25 accepted=25 refused=0 replayed=1 assets=6"
+  if [ "$good_summary" = "34,34,0,2,6" ]; then
+    echo "  ok   records=34 accepted=34 refused=0 replayed=2 assets=6"
     good_accepted="$(jpy "d['accepted']" "$good_json")"
   else
-    echo "FAIL good run: expected records=25,accepted=25,refused=0,replayed=1,assets=6; got $good_summary" >&2
+    echo "FAIL good run: expected records=34,accepted=34,refused=0,replayed=2,assets=6; got $good_summary" >&2
     overall_fail=1
     good_accepted=0
   fi

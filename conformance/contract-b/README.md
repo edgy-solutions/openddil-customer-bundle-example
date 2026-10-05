@@ -13,7 +13,7 @@ live in the integrator's private overlay.
 |---|---|
 | `validate.py` | The validator. Stdlib Python ≥ 3.10, no installs. Reads JSONL or `rpk topic consume` output. |
 | `selftest.sh` | Proves the validator can fail: every rule has a red case, and an empty input exits 2. |
-| `fixtures/replay/` | Synthetic Contract B records: 6 assets, both planes, one replay. |
+| `fixtures/replay/` | Synthetic Contract B records: 6 assets plus parts stock, three planes, two replays total. |
 | `fixtures/refused/` | One file per rule, each violating exactly that rule. |
 | `fixtures/nations.txt` | The fixture's nation set, for `--nations`. |
 
@@ -21,7 +21,8 @@ live in the integrator's private overlay.
 
 Records go on the element planes:
 - `asset-element-telemetry`, one record per asset per observation, key `asset_id`;
-- `asset-element-inventory`, one per asset per layer, key `asset_id:layer_name`.
+- `asset-element-inventory`, one per asset per layer, key `asset_id:layer_name`;
+- `parts-availability`, one per site per part, key `site:part_ref`.
 
 Each record is the existing element-plane envelope plus:
 
@@ -33,6 +34,18 @@ Each record is the existing element-plane envelope plus:
 | `extraction.cursor`, `extraction.extracted_at_ns` | Extraction lag is data (`extraction_absent`, `extraction_before_observation`). |
 | `operational.readiness` `{status: FMC\|PMC\|NMC, factors: [...]}` | Status equals the worst factor (`readiness_factor_mismatch`), and agrees with `health_state` (`readiness_health_conflict`). |
 | `extras` `{declared: "organic", fields: {...}}` | Anything with no contract home. Nothing else may appear at top level (`unknown_field`). |
+
+### The parts plane
+
+`parts-availability` is keyed by site and part, not by asset: there is no `asset_id` or
+`sustainment_id` on these records, and the three asset-identifier rules do not apply to this plane.
+
+| Block | Rule it answers to |
+|---|---|
+| `part_ref`, `item` | The part identity (`part_invalid`). |
+| `on_hand`, `lead_time_days` | Stock at this site. `lead_time_days` is **absent** when the source cannot estimate it — never `null` and never `0` (`stock_invalid`). |
+| `source` | Who published this row (`source_absent`). |
+| `nearest_site_with_stock`, `nearest_on_hand` | The source's own nearest-first answer, published on its own records: a site name with a count ≥ 1, or `null` with no count when no site in its search order has stock (`nearest_invalid`). |
 
 Run `python3 validate.py --list-rules` for the full rule set.
 
@@ -54,7 +67,7 @@ Run `python3 validate.py --list-rules` for the full rule set.
 bash selftest.sh          # Windows Git Bash: PYTHON="py -3" bash selftest.sh
 ```
 - It ends with
-  `contract-b selftest: good=25 accepted, red cases=<n>/<n> matched, rules uncovered=0, enums=<…>`.
+  `contract-b selftest: good=34 accepted, red cases=<n>/<n> matched, rules uncovered=0, enums=<…>`.
 - Anything else means stop: the validator itself is not trustworthy here.
 
 ### Stage 1: the adapter's real output
@@ -63,6 +76,11 @@ Consume what the adapter actually wrote, from the start of both planes. `<N>` mu
 number of records written:
 ```sh
 rpk topic consume asset-element-telemetry asset-element-inventory -o start -n <N> \
+  | python3 validate.py --nations <your-nations.txt>
+```
+Parts stock is a separate topic, consumed and validated the same way:
+```sh
+rpk topic consume parts-availability -o start -n <N> \
   | python3 validate.py --nations <your-nations.txt>
 ```
 - `--readiness required` is the default.
