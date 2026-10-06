@@ -69,7 +69,21 @@ import time
 from io import BytesIO
 
 try:
-    from opendis.dis7 import EntityStatePdu, RemoveEntityPdu, EventReportPdu, FixedDatum, VariableDatum
+    from opendis.dis7 import (
+        EntityStatePdu,
+        RemoveEntityPdu,
+        EventReportPdu,
+        FixedDatum,
+        VariableDatum,
+        FirePdu,
+        DetonationPdu,
+        EntityID,
+        EventIdentifier,
+        SimulationAddress,
+        MunitionDescriptor,
+        EntityType,
+        Vector3Double,
+    )
     from opendis.DataOutputStream import DataOutputStream
 except ImportError:  # pragma: no cover
     sys.stderr.write(
@@ -451,6 +465,229 @@ def resolve_destroy_schedule(entities: list[Entity], schedule: dict[str, float])
                 LOG.info("destroy schedule: dis:%d:%d:%d at t+%gs",
                          e.site_id, e.app_id, e.entity_id, e.destroy_at_s)
                 break
+
+
+# ---------------------------------------------------------------------------
+# --fire-schedule / --detonate-schedule (effector events, Fire/Detonation
+# PDUs). Modelled on --destroy-schedule's shape -- a CLI value (or env var),
+# parsed ONCE at start-up, applied per tick off the same injected elapsed_s
+# clock -- with one deliberate difference: a malformed entry here is FATAL
+# (SystemExit), not logged-and-skipped. --destroy-schedule tolerates a typo
+# because it is a live operator control during a demonstration; an effector
+# schedule is a test fixture, read once, where a silently-dropped entry
+# would make a predicted count wrong without any visible sign why.
+#
+# L (the launcher) and TGT (the target) accept the same two forms
+# --destroy-schedule's ASSET does: the canonical `dis:site:app:entity`, or a
+# bare entity number resolved against THIS sim's own --site-id/--app-id.
+# Unlike --destroy-schedule's ASSET, L does not have to match one of this
+# sim's own Entity objects -- a Fire/Detonation PDU's firingEntityID is
+# just a field, not a claim that the sender also emits that entity's
+# ESPDUs, and a fixture that fires from an id the fleet does not have is a
+# deliberate case: it exercises the downstream unknown-launcher refusal.
+def _parse_effector_entity_key(tok: str, site_id: int, app_id: int) -> tuple[int, int, int]:
+    """`dis:site:app:entity` or a bare entity number -> (site, app, entity).
+
+    Raises ValueError (not SystemExit) so both schedule parsers can catch it
+    and name the FULL bad entry, not just this sub-field.
+    """
+    tok = tok.strip()
+    if tok.startswith("dis:"):
+        parts = tok.split(":")
+        if len(parts) != 4:
+            raise ValueError(f"{tok!r} is not dis:site:app:entity")
+        try:
+            return int(parts[1]), int(parts[2]), int(parts[3])
+        except ValueError:
+            raise ValueError(f"{tok!r} has a non-integer dis:site:app:entity field")
+    if not tok.lstrip("-").isdigit():
+        raise ValueError(f"{tok!r} is not an entity number or dis:site:app:entity")
+    return site_id, app_id, int(tok)
+
+
+def parse_fire_schedule(spec: str, site_id: int, app_id: int) -> list[dict]:
+    """Parse `--fire-schedule` / `DIS_FIRE_SCHEDULE`.
+
+    Format: comma-separated `L@T:E:Q[:TGT]` -- launcher L, elapsed seconds
+    T, eventNumber E, quantity Q, optional target TGT (default 0:0:0, DIS's
+    "no target" convention -- see _entity_urn_or_none's sensor-ingest
+    counterpart).
+
+    A bad entry exits non-zero NAMING that entry, unlike --destroy-
+    schedule's skip-and-warn (see the module comment above this function).
+    """
+    entries: list[dict] = []
+    for tok in (t.strip() for t in (spec or "").split(",")):
+        if not tok:
+            continue
+        try:
+            launcher_s, sep, rest = tok.partition("@")
+            if not sep:
+                raise ValueError("missing '@T:E:Q[:TGT]'")
+            # maxsplit=3: T, E and Q never contain ':', but TGT can (the
+            # canonical dis:site:app:entity form) -- splitting on every ':'
+            # would shred it. The same reasoning applies to L below.
+            fields = rest.split(":", 3)
+            if len(fields) not in (3, 4):
+                raise ValueError("expected T:E:Q or T:E:Q:TGT")
+            t_s, event_s, qty_s = fields[0], fields[1], fields[2]
+            tgt_s = fields[3] if len(fields) == 4 else None
+            launcher = _parse_effector_entity_key(launcher_s, site_id, app_id)
+            t = float(t_s)
+            if t < 0:
+                raise ValueError("T must be >= 0")
+            event = int(event_s)
+            qty = int(qty_s)
+            target = (_parse_effector_entity_key(tgt_s, site_id, app_id)
+                      if tgt_s else (0, 0, 0))
+        except ValueError as exc:
+            raise SystemExit(f"--fire-schedule: bad entry {tok!r}: {exc}")
+        entries.append({
+            "launcher": launcher, "t": t, "event": event,
+            "quantity": qty, "target": target,
+        })
+    return entries
+
+
+def parse_detonate_schedule(spec: str, site_id: int, app_id: int,
+                            fire_by_event: dict[int, dict]) -> list[dict]:
+    """Parse `--detonate-schedule` / `DIS_DETONATE_SCHEDULE`.
+
+    Format: comma-separated `E@T:R[:L]` -- fire event E, elapsed seconds T,
+    detonationResult R, optional launcher override L.
+
+    Without L, E must be a launcher this call already knows about (an entry
+    in `fire_by_event`, built from the already-parsed --fire-schedule) --
+    the firing entity for a Detonation is the launcher of its Fire. An
+    orphan detonation (E not in --fire-schedule) with no L is refused HERE,
+    at parse time, not left to fail later: that is what makes "an orphan
+    without L is refused at parse" a parser-level guarantee rather than a
+    runtime one.
+    """
+    entries: list[dict] = []
+    for tok in (t.strip() for t in (spec or "").split(",")):
+        if not tok:
+            continue
+        try:
+            event_s, sep, rest = tok.partition("@")
+            if not sep:
+                raise ValueError("missing '@T:R[:L]'")
+            fields = rest.split(":", 2)  # L can contain ':' (dis:s:a:e) -- see fire-schedule's comment
+            if len(fields) not in (2, 3):
+                raise ValueError("expected T:R or T:R:L")
+            t_s, result_s = fields[0], fields[1]
+            launcher_s = fields[2] if len(fields) == 3 else None
+            event = int(event_s)
+            t = float(t_s)
+            if t < 0:
+                raise ValueError("T must be >= 0")
+            result = int(result_s)
+            if launcher_s:
+                launcher = _parse_effector_entity_key(launcher_s, site_id, app_id)
+            elif event in fire_by_event:
+                launcher = fire_by_event[event]["launcher"]
+            else:
+                raise ValueError(
+                    f"event {event} is not in --fire-schedule and no "
+                    "launcher override (third field, L) was given -- an "
+                    "orphan detonation needs an explicit launcher"
+                )
+        except ValueError as exc:
+            raise SystemExit(f"--detonate-schedule: bad entry {tok!r}: {exc}")
+        entries.append({
+            "event": event, "t": t, "result": result, "launcher": launcher,
+        })
+    return entries
+
+
+def parse_munition_type(spec: str) -> tuple[int, int, int, int, int, int, int]:
+    """`--munition-type "k.d.c.cat.sub.spec.extra"` -> the DIS 7-tuple.
+
+    Default 2.9.225.2.1.1.0 is a PLACEHOLDER TUPLE for these tests' own
+    fixture use, not a claim about any real munition -- same discipline as
+    RECOGNISED_TYPES' header comment for platform entity types.
+    """
+    parts = spec.split(".")
+    if len(parts) != 7:
+        raise SystemExit(
+            f"--munition-type: {spec!r} must be 7 dot-separated integers "
+            "(kind.domain.country.category.subcategory.specific.extra)"
+        )
+    try:
+        return tuple(int(p) for p in parts)  # type: ignore[return-value]
+    except ValueError:
+        raise SystemExit(f"--munition-type: {spec!r} has a non-integer field")
+
+
+def fire_pdu(entry: dict, munition_type: tuple[int, int, int, int, int, int, int],
+            sim_site_id: int, sim_app_id: int, exercise_id: int,
+            protocol_version: int) -> FirePdu:
+    """One Fire PDU (type 2, Warfare family) for one fired --fire-schedule
+    entry. eventID's simulationAddress is THIS SIM's own site/app (not the
+    launcher's) -- the event belongs to the exercise this sim is running,
+    same convention event_report_pdu() uses for originatingEntityID's
+    site/app. PURE TRANSPORT: munitionType/warhead/fuse are opaque DIS
+    codes, same discipline as the rest of this module's schedule PDUs."""
+    pdu = FirePdu(
+        munitionExpendableID=EntityID(0, 0, 0),
+        eventID=EventIdentifier(
+            simulationAddress=SimulationAddress(site=sim_site_id, application=sim_app_id),
+            eventNumber=entry["event"],
+        ),
+        location=Vector3Double(x=0.0, y=0.0, z=0.0),
+        descriptor=MunitionDescriptor(
+            munitionType=EntityType(
+                entityKind=munition_type[0], domain=munition_type[1],
+                country=munition_type[2], category=munition_type[3],
+                subcategory=munition_type[4], specific=munition_type[5],
+                extra=munition_type[6],
+            ),
+            warhead=0, fuse=0, quantity=entry["quantity"],
+        ),
+        range_=0.0,
+    )
+    pdu.firingEntityID.siteID, pdu.firingEntityID.applicationID, pdu.firingEntityID.entityID = entry["launcher"]
+    pdu.targetEntityID.siteID, pdu.targetEntityID.applicationID, pdu.targetEntityID.entityID = entry["target"]
+    pdu.protocolVersion = protocol_version
+    pdu.exerciseID = exercise_id
+    pdu.pduType = 2        # Fire
+    pdu.protocolFamily = 2  # Warfare
+    pdu.pduStatus = 0
+    return pdu
+
+
+def detonation_pdu(entry: dict, munition_type: tuple[int, int, int, int, int, int, int],
+                   sim_site_id: int, sim_app_id: int, exercise_id: int,
+                   protocol_version: int) -> DetonationPdu:
+    """One Detonation PDU (type 3, Warfare family) for one fired
+    --detonate-schedule entry. eventID carries the SAME eventNumber as its
+    Fire (that is how event_urn correlates the two downstream) -- entry["event"]
+    is this call's only link back to the Fire; entry["launcher"] was
+    already resolved (override or inherited) by parse_detonate_schedule."""
+    pdu = DetonationPdu(
+        eventID=EventIdentifier(
+            simulationAddress=SimulationAddress(site=sim_site_id, application=sim_app_id),
+            eventNumber=entry["event"],
+        ),
+        location=Vector3Double(x=0.0, y=0.0, z=0.0),
+        descriptor=MunitionDescriptor(
+            munitionType=EntityType(
+                entityKind=munition_type[0], domain=munition_type[1],
+                country=munition_type[2], category=munition_type[3],
+                subcategory=munition_type[4], specific=munition_type[5],
+                extra=munition_type[6],
+            ),
+            warhead=0, fuse=0, quantity=0,
+        ),
+        detonationResult=entry["result"],
+    )
+    pdu.firingEntityID.siteID, pdu.firingEntityID.applicationID, pdu.firingEntityID.entityID = entry["launcher"]
+    pdu.protocolVersion = protocol_version
+    pdu.exerciseID = exercise_id
+    pdu.pduType = 3        # Detonation
+    pdu.protocolFamily = 2  # Warfare
+    pdu.pduStatus = 0
+    return pdu
 
 
 def reload_damage_map(path: str) -> dict[str, str]:
@@ -1009,6 +1246,27 @@ def main() -> int:
                    help="Fraction of entities that carry the --damage level; "
                         "the rest emit appearance with damage none. Only "
                         "meaningful with --damage.")
+    p.add_argument("--fire-schedule", default=os.getenv("DIS_FIRE_SCHEDULE", ""),
+                   help="Comma-separated L@T:E:Q[:TGT]: at elapsed T seconds, "
+                        "send one Fire PDU from launcher L (firingEntityID) "
+                        "with eventNumber E (site/app = this sim's own "
+                        "--site-id/--app-id), quantity Q, and target TGT "
+                        "(default 0:0:0). L/TGT accept dis:site:app:entity "
+                        "or a bare entity number. A bad entry exits non-zero "
+                        "naming it.")
+    p.add_argument("--detonate-schedule", default=os.getenv("DIS_DETONATE_SCHEDULE", ""),
+                   help="Comma-separated E@T:R[:L]: at elapsed T seconds, "
+                        "send one Detonation PDU for fire event E with "
+                        "detonationResult R. The firing entity is E's "
+                        "--fire-schedule launcher unless L overrides it; L "
+                        "is REQUIRED when E is not in --fire-schedule (an "
+                        "orphan detonation). A bad entry exits non-zero "
+                        "naming it.")
+    p.add_argument("--munition-type", default=os.getenv("DIS_MUNITION_TYPE", "2.9.225.2.1.1.0"),
+                   help="DIS 7-tuple 'kind.domain.country.category.subcategory."
+                        "specific.extra' for descriptor.munitionType on every "
+                        "scheduled Fire/Detonation. Default is a placeholder "
+                        "tuple, not a claim about any real munition.")
     p.add_argument("--mobility-kill", action="store_true",
                    help="Set the mobility/propulsion-kill bit on damaged "
                         "entities.")
@@ -1082,6 +1340,24 @@ def main() -> int:
     if destroy_schedule:
         resolve_destroy_schedule(entities, destroy_schedule)
 
+    # --fire-schedule / --detonate-schedule: parsed and cross-linked once at
+    # start-up, same point as --destroy-schedule above. Unlike that schedule,
+    # a bad entry here is fatal (see parse_fire_schedule's module comment).
+    munition_type = parse_munition_type(args.munition_type)
+    fire_schedule = parse_fire_schedule(args.fire_schedule, args.site_id, args.app_id)
+    fire_by_event = {entry["event"]: entry for entry in fire_schedule}
+    detonate_schedule = parse_detonate_schedule(
+        args.detonate_schedule, args.site_id, args.app_id, fire_by_event,
+    )
+    for entry in fire_schedule:
+        LOG.info("fire schedule: launcher=dis:%d:%d:%d event=%d qty=%d at t+%gs%s",
+                 *entry["launcher"], entry["event"], entry["quantity"], entry["t"],
+                 "" if entry["target"] == (0, 0, 0)
+                 else f" target=dis:{entry['target'][0]}:{entry['target'][1]}:{entry['target'][2]}")
+    for entry in detonate_schedule:
+        LOG.info("detonate schedule: event=%d launcher=dis:%d:%d:%d result=%d at t+%gs",
+                 entry["event"], *entry["launcher"], entry["result"], entry["t"])
+
     # DIS_EVENT_SCHEDULE_PATH: validated once at start-up, same as the
     # entity type/platform maps above -- a bad entry exits non-zero here
     # rather than mid-run. Unset -> [] and nothing below ever fires, so an
@@ -1089,6 +1365,12 @@ def main() -> int:
     entities_by_id = {e.entity_id: e for e in entities}
     event_schedule = load_event_schedule(None, set(entities_by_id))
     event_schedule_next_due = [entry["at_s"] for entry in event_schedule]
+    # Fire/Detonation schedules are one-shot, same contract as --destroy-
+    # schedule: due_schedule_entries() already gives that for free when an
+    # entry carries no "repeat_s" key (entry.get("repeat_s") is None ->
+    # next_due[i] set to None after firing, never due again).
+    fire_schedule_next_due = [entry["t"] for entry in fire_schedule]
+    detonate_schedule_next_due = [entry["t"] for entry in detonate_schedule]
     for entry in event_schedule:
         LOG.info(
             "event schedule: entity %d event_type=%d at t+%gs%s",
@@ -1144,6 +1426,36 @@ def main() -> int:
                     errors += 1
                     LOG.warning("event report send failed for entity %d: %s",
                                entity.entity_id, exc)
+
+            # Scheduled Fire PDUs (--fire-schedule), same once-per-sweep
+            # cadence as the event schedule above.
+            for idx in due_schedule_entries(fire_schedule, fire_schedule_next_due, elapsed_s):
+                entry = fire_schedule[idx]
+                pdu = fire_pdu(entry, munition_type, args.site_id, args.app_id,
+                               args.exercise_id, args.protocol_version)
+                try:
+                    sock.sendto(serialize(pdu), (args.host, args.port))
+                    sent += 1
+                    LOG.info("fire sent event=%d launcher=dis:%d:%d:%d qty=%d",
+                             entry["event"], *entry["launcher"], entry["quantity"])
+                except OSError as exc:
+                    errors += 1
+                    LOG.warning("fire send failed for event %d: %s", entry["event"], exc)
+
+            # Scheduled Detonation PDUs (--detonate-schedule), same cadence.
+            for idx in due_schedule_entries(detonate_schedule, detonate_schedule_next_due, elapsed_s):
+                entry = detonate_schedule[idx]
+                pdu = detonation_pdu(entry, munition_type, args.site_id, args.app_id,
+                                     args.exercise_id, args.protocol_version)
+                try:
+                    sock.sendto(serialize(pdu), (args.host, args.port))
+                    sent += 1
+                    LOG.info("detonation sent event=%d result=%d",
+                             entry["event"], entry["result"])
+                except OSError as exc:
+                    errors += 1
+                    LOG.warning("detonation send failed for event %d: %s",
+                               entry["event"], exc)
 
             now_overridden = set()
             for e in entities:
