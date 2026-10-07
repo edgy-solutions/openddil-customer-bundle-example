@@ -819,7 +819,7 @@ def resolve_posture_schedule(entities: list[Entity], schedule: list[dict]) -> No
                 match = by_key[key]
                 break
         if match is None:
-            LOG.warning("posture schedule: dis:%d:%d:%d matches no entity in "
+            LOG.warning("posture schedule: entity %d:%d:%d matches nothing in "
                         "this sim; entry at t+%gs ignored",
                         site, app, entity_id, entry["t"])
             continue
@@ -833,7 +833,7 @@ def resolve_posture_schedule(entities: list[Entity], schedule: list[dict]) -> No
         e.speed_mps = 0.0
         e.heading = 0.0
         for entry in e.posture_schedule:
-            LOG.info("posture schedule: dis:%d:%d:%d action=%s at t+%gs",
+            LOG.info("posture schedule: entity %d:%d:%d action=%s at t+%gs",
                      e.site_id, e.app_id, e.entity_id, entry["action"], entry["t"])
 
 
@@ -1088,7 +1088,7 @@ class Entity:
                 self.speed_mps = _POSTURE_MOVE_SPEED_MPS
             elif action == "stop":
                 self.speed_mps = 0.0
-            LOG.info("posture schedule fired: dis:%d:%d:%d action=%s at t+%gs",
+            LOG.info("posture schedule fired: entity %d:%d:%d action=%s at t+%gs",
                      self.site_id, self.app_id, self.entity_id, action, elapsed_s)
         return True
 
