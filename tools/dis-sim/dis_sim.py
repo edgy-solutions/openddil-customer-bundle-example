@@ -54,6 +54,17 @@ COORDINATES ARE SYNTHETIC
 Positions are generated around a fictional training area and carry no
 relationship to any real installation, unit, or operation. Callsigns are
 likewise invented and follow the sample overlay's fictional naming.
+
+MULTI-TARGET FAN-OUT (--targets / DIS_TARGETS)
+-----------------------------------------------
+A real DIS deployment often puts every receiver on one shared multicast
+group, so every entity reaches every listener at once. This tool talks
+unicast UDP instead, so --targets is the unicast stand-in: a comma-
+separated host:port list that every PDU goes to, as if they were all on
+that shared segment. Leave it unset and --host/--port behave exactly as
+before (one destination, unchanged). --targets and a non-default --host
+cannot both be set -- there would be no single answer for which one the
+operator meant.
 """
 from __future__ import annotations
 
@@ -1188,11 +1199,85 @@ def serialize(pdu: EntityStatePdu | RemoveEntityPdu | EventReportPdu) -> bytes:
     return bio.getvalue()
 
 
+# The literal fallback for --host when neither --host nor DIS_TARGET_HOST is
+# set. Named so main() can tell "the operator never touched --host" apart
+# from "the operator set --host (or DIS_TARGET_HOST) to something" -- that
+# distinction is what makes --targets + a non-default --host a startup error
+# (see parse_targets / MULTI-TARGET FAN-OUT above) rather than something
+# silently resolved one way or the other.
+_DEFAULT_HOST = "127.0.0.1"
+
+
+def parse_targets(spec: str) -> list[tuple[str, int]]:
+    """Parse DIS_TARGETS / --targets: comma-separated host:port entries.
+
+    Empty/unset -> [] (no fan-out; callers fall back to (--host, --port)).
+    A malformed entry exits non-zero naming it, same fail-closed convention
+    as this file's other --*-schedule parsers.
+    """
+    targets: list[tuple[str, int]] = []
+    for tok in (t.strip() for t in spec.split(",")):
+        if not tok:
+            continue
+        if ":" not in tok:
+            raise SystemExit(f"--targets: {tok!r} is not host:port")
+        host, _, port_s = tok.rpartition(":")
+        if not host or not port_s.isdigit():
+            raise SystemExit(f"--targets: {tok!r} is not host:port")
+        targets.append((host, int(port_s)))
+    return targets
+
+
+def send_pdu(sock: socket.socket, payload: bytes, host: str, port: int,
+             targets: list[tuple[str, int]]) -> None:
+    """The one sock.sendto chokepoint for every PDU this tool emits.
+
+    `targets`, when non-empty, fans `payload` out to every entry instead of
+    just (host, port) -- the unicast stand-in for a shared multicast segment
+    described under MULTI-TARGET FAN-OUT above. Empty `targets` (the default,
+    --targets/DIS_TARGETS unset) sends to (host, port) exactly as every call
+    site did before --targets existed -- no behaviour change in that case.
+    """
+    if targets:
+        # Every target gets its attempt even when an earlier one fails: one
+        # unreachable listener must not silence the others. The first error
+        # is re-raised afterwards so the caller's error count still sees it.
+        first_error: OSError | None = None
+        for dest in targets:
+            try:
+                sock.sendto(payload, dest)
+            except OSError as exc:
+                first_error = first_error or exc
+        if first_error is not None:
+            raise first_error
+    else:
+        sock.sendto(payload, (host, port))
+
+
+def check_targets_host_conflict(host: str, targets: list[tuple[str, int]]) -> None:
+    """Refuse --targets combined with a non-default --host: with both set
+    there is no single answer for which destination the operator meant, so
+    fail closed at startup rather than silently picking one (see
+    MULTI-TARGET FAN-OUT above)."""
+    if targets and host != _DEFAULT_HOST:
+        raise SystemExit(
+            "--targets and a non-default --host cannot both be set "
+            f"(--host={host!r}); drop --host/DIS_TARGET_HOST or drop "
+            "--targets/DIS_TARGETS"
+        )
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="DIS EntityState PDU generator")
-    p.add_argument("--host", default=os.getenv("DIS_TARGET_HOST", "127.0.0.1"),
+    p.add_argument("--host", default=os.getenv("DIS_TARGET_HOST", _DEFAULT_HOST),
                    help="destination host (sensor-ingest)")
     p.add_argument("--port", type=int, default=int(os.getenv("DIS_TARGET_PORT", "62040")))
+    p.add_argument("--targets", default=os.getenv("DIS_TARGETS", ""),
+                   help="Comma-separated host:port list. When set, every PDU "
+                        "goes to every target instead of --host/--port -- a "
+                        "unicast stand-in for a shared multicast segment "
+                        "where every listener hears every entity. Cannot be "
+                        "combined with a non-default --host.")
     p.add_argument("--entities", type=int, default=int(os.getenv("DIS_ENTITIES", "8")))
     # Explicit entity ids, comma separated. When given, this REPLACES the
     # contiguous `1000..1000+N-1` fleet rather than adding to it, and
@@ -1282,6 +1367,9 @@ def main() -> int:
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
+
+    targets = parse_targets(args.targets)
+    check_targets_host_conflict(args.host, targets)
 
     if args.list_types:
         print("Built-in DIS entity types (each a key in "
@@ -1381,11 +1469,19 @@ def main() -> int:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 
-    LOG.info(
-        "dis-sim -> %s:%d | %d entities | %.1fs heartbeat | DIS v%d exercise %d",
-        args.host, args.port, len(entities), args.interval,
-        args.protocol_version, args.exercise_id,
-    )
+    if targets:
+        LOG.info(
+            "dis-sim -> fan-out to %d target(s): %s | %d entities | %.1fs "
+            "heartbeat | DIS v%d exercise %d",
+            len(targets), ["%s:%d" % t for t in targets], len(entities),
+            args.interval, args.protocol_version, args.exercise_id,
+        )
+    else:
+        LOG.info(
+            "dis-sim -> %s:%d | %d entities | %.1fs heartbeat | DIS v%d exercise %d",
+            args.host, args.port, len(entities), args.interval,
+            args.protocol_version, args.exercise_id,
+        )
     for e in entities:
         LOG.info("  entity %d  %-14s  %s", e.entity_id, e.variant, e.marking)
 
@@ -1415,7 +1511,7 @@ def main() -> int:
                 entity = entities_by_id[entry["entity"]]
                 pdu = event_report_pdu(entity, entry, args.exercise_id, args.protocol_version)
                 try:
-                    sock.sendto(serialize(pdu), (args.host, args.port))
+                    send_pdu(sock, serialize(pdu), args.host, args.port, targets)
                     sent += 1
                     LOG.info(
                         "event report: entity=%d event_type=%d fixed_datum_ids=%s "
@@ -1434,7 +1530,7 @@ def main() -> int:
                 pdu = fire_pdu(entry, munition_type, args.site_id, args.app_id,
                                args.exercise_id, args.protocol_version)
                 try:
-                    sock.sendto(serialize(pdu), (args.host, args.port))
+                    send_pdu(sock, serialize(pdu), args.host, args.port, targets)
                     sent += 1
                     LOG.info("fire sent event=%d launcher=dis:%d:%d:%d qty=%d",
                              entry["event"], *entry["launcher"], entry["quantity"])
@@ -1448,7 +1544,7 @@ def main() -> int:
                 pdu = detonation_pdu(entry, munition_type, args.site_id, args.app_id,
                                      args.exercise_id, args.protocol_version)
                 try:
-                    sock.sendto(serialize(pdu), (args.host, args.port))
+                    send_pdu(sock, serialize(pdu), args.host, args.port, targets)
                     sent += 1
                     LOG.info("detonation sent event=%d result=%d",
                              entry["event"], entry["result"])
@@ -1472,9 +1568,10 @@ def main() -> int:
                 # ticks the map keeps saying "removed" afterwards.
                 if e.removed and not e._removed_pdu_sent:
                     try:
-                        sock.sendto(
+                        send_pdu(
+                            sock,
                             serialize(e.to_remove_entity_pdu(args.exercise_id, args.protocol_version)),
-                            (args.host, args.port),
+                            args.host, args.port, targets,
                         )
                         LOG.info("entity %d: sent Remove Entity PDU; ESPDUs stop", e.entity_id)
                     except OSError as exc:
@@ -1488,8 +1585,8 @@ def main() -> int:
                 # True and behaviour is unchanged.
                 if not (e.silent or e.removed):
                     try:
-                        sock.sendto(serialize(e.to_pdu(args.exercise_id, args.protocol_version)),
-                                    (args.host, args.port))
+                        send_pdu(sock, serialize(e.to_pdu(args.exercise_id, args.protocol_version)),
+                                 args.host, args.port, targets)
                         sent += 1
                     except OSError as exc:
                         errors += 1
