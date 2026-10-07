@@ -738,12 +738,119 @@ def reload_damage_map(path: str) -> dict[str, str]:
     return _DAMAGE_MAP
 
 
+# ---------------------------------------------------------------------------
+# --posture-schedule (launcher posture: raise/stow the launcher-raised
+# appearance bit, move/stop a scheduled entity's own motion). Same shape as
+# --fire-schedule/--detonate-schedule above -- a test fixture read once at
+# start-up, so a malformed entry is FATAL (SystemExit), not logged-and-
+# skipped like --destroy-schedule's live operator control.
+_POSTURE_ACTIONS = ("raise", "stow", "move", "stop")
+# Constant speed a "move" action gives a scheduled entity ("5 m/s along x" --
+# see Entity.step()'s posture-schedule branch, which holds heading at 0.0 so
+# this is the entity's entire velocity).
+_POSTURE_MOVE_SPEED_MPS = 5.0
+
+
+def parse_posture_schedule(spec: str, site_id: int, app_id: int) -> list[dict]:
+    """Parse `--posture-schedule` / `DIS_POSTURE_SCHEDULE`.
+
+    Format: comma-separated `ENTITY:T:ACTION` -- ENTITY accepts the same two
+    forms as --fire-schedule's L (dis:site:app:entity or a bare entity
+    number resolved against this sim's own --site-id/--app-id), T is
+    elapsed seconds since process start, ACTION is one of raise|stow|move|
+    stop. Entries are returned sorted by T so resolve_posture_schedule can
+    hand each entity its own entries in firing order.
+
+    A bad entry exits non-zero naming it, same discipline as --fire-
+    schedule/--detonate-schedule (this is a fixture read once, not an
+    operator lever where a typo must not take the generator down).
+    """
+    entries: list[dict] = []
+    for tok in (t.strip() for t in (spec or "").split(",")):
+        if not tok:
+            continue
+        try:
+            fields = tok.split(":")
+            # ENTITY can itself be dis:site:app:entity (4 colon-separated
+            # fields) plus :T:ACTION, or a bare number plus :T:ACTION.
+            if len(fields) == 6 and fields[0] == "dis":
+                entity_s = ":".join(fields[:4])
+                t_s, action = fields[4], fields[5]
+            elif len(fields) == 3:
+                entity_s, t_s, action = fields
+            else:
+                raise ValueError("expected ENTITY:T:ACTION")
+            entity = _parse_effector_entity_key(entity_s, site_id, app_id)
+            t = float(t_s)
+            if t < 0:
+                raise ValueError("T must be >= 0")
+            action = action.strip()
+            if action not in _POSTURE_ACTIONS:
+                raise ValueError(f"action must be one of {_POSTURE_ACTIONS}")
+        except ValueError as exc:
+            raise SystemExit(f"--posture-schedule: bad entry {tok!r}: {exc}")
+        entries.append({"entity": entity, "t": t, "action": action})
+    entries.sort(key=lambda e: e["t"])
+    return entries
+
+
+def resolve_posture_schedule(entities: list[Entity], schedule: list[dict]) -> None:
+    """Match each --posture-schedule entry to its entity, same lookup as
+    resolve_destroy_schedule. Logged once per matched entry at start-up, so
+    an operator sees the whole schedule before anything fires.
+
+    An entity with no matching entries is left completely untouched
+    (has_posture_schedule stays False) -- Entity.step() and to_pdu() then
+    take their ordinary, unscheduled path, unchanged from today. A matched
+    entity's speed/heading are zeroed here (not left at the random startup
+    values) so its very first PDU, before any action has fired, already
+    shows a stationary launcher rather than one still drifting from
+    Entity.__init__'s random walk.
+    """
+    by_key: dict[str, Entity] = {}
+    for e in entities:
+        for key in _damage_map_key(e.site_id, e.app_id, e.entity_id):
+            by_key[key] = e
+    for entry in schedule:
+        site, app, entity_id = entry["entity"]
+        match: Entity | None = None
+        for key in _damage_map_key(site, app, entity_id):
+            if key in by_key:
+                match = by_key[key]
+                break
+        if match is None:
+            LOG.warning("posture schedule: dis:%d:%d:%d matches no entity in "
+                        "this sim; entry at t+%gs ignored",
+                        site, app, entity_id, entry["t"])
+            continue
+        match.posture_schedule.append(entry)
+    for e in entities:
+        if not e.posture_schedule:
+            continue
+        e.posture_schedule.sort(key=lambda x: x["t"])
+        e._posture_next_due = [entry["t"] for entry in e.posture_schedule]
+        e.has_posture_schedule = True
+        e.speed_mps = 0.0
+        e.heading = 0.0
+        for entry in e.posture_schedule:
+            LOG.info("posture schedule: dis:%d:%d:%d action=%s at t+%gs",
+                     e.site_id, e.app_id, e.entity_id, entry["action"], entry["t"])
+
+
+# Bit 15, LAND platforms only -- "launcher raised" (see
+# openddil-contracts/ontology/dis_appearance.yaml, row "1_1" -> launcher).
+# This decoder's mapping, not verified against the published standard (same
+# caveat the ontology row itself carries); checking it is owed.
+_LAUNCHER_RAISED_BIT = 15
+
+
 def appearance_bits(domain: int,
                     damage: str = "none",
                     mobility_kill: bool = False,
                     firepower_kill: bool = False,
                     powerplant_on: bool = True,
-                    deactivated: bool = False) -> int:
+                    deactivated: bool = False,
+                    launcher_raised: bool = False) -> int:
     """Compose a 32-bit DIS entity-appearance value for a PLATFORM (kind 1)."""
     bits = 0
     bits |= (DAMAGE_LEVELS[damage] & 0x3) << 3       # bits 3-4, all platform domains
@@ -760,6 +867,13 @@ def appearance_bits(domain: int,
         bits |= 1 << 21
     if deactivated:
         bits |= 1 << 22
+    if launcher_raised:
+        if domain != 1:
+            raise ValueError(
+                "launcher_raised is a LAND-domain bit; setting it for domain "
+                f"{domain} would encode an unrelated meaning"
+            )
+        bits |= 1 << _LAUNCHER_RAISED_BIT
     return bits
 
 
@@ -825,6 +939,18 @@ class Entity:
         # matches this entity's id.
         self.destroy_at_s: float | None = None
         self._destroy_logged = False  # edge-detect: log the fire once, not every tick
+
+        # --posture-schedule (see resolve_posture_schedule / apply_posture_
+        # schedule): this entity's own entries (sorted by t), matched
+        # next_due list for due_schedule_entries, and the launcher-raised
+        # claim raise/stow actions set. Empty/False until
+        # resolve_posture_schedule matches at least one entry to this
+        # entity -- an unmatched entity's motion and appearance are
+        # untouched, same contract as destroy_at_s is None.
+        self.posture_schedule: list[dict] = []
+        self._posture_next_due: list[float | None] = []
+        self.has_posture_schedule = False
+        self.launcher_raised = False
 
     def apply_damage_override(self, damage_map: dict[str, str]) -> bool:
         """Apply a per-asset override from the declarative map, if present.
@@ -927,13 +1053,56 @@ class Entity:
         self.silent = False
         return True
 
+    def apply_posture_schedule(self, elapsed_s: float) -> bool:
+        """Advance this entity's --posture-schedule, if it has one.
+
+        Call this the same way apply_destroy_schedule is called -- only
+        when apply_damage_override (and, for a shared entity, apply_
+        destroy_schedule) reported no live override for this tick. Returns
+        True on every tick once this entity has a schedule, whether or not
+        an entry fires THIS tick (same "stays in effect" contract as
+        apply_destroy_schedule), which is what lets main()'s loop skip the
+        ordinary Entity.step() random motion for a scheduled entity: "A
+        scheduled entity's motion comes ONLY from its schedule."
+
+        Re-asserts emit_appearance every tick for the same reason apply_
+        destroy_schedule does: apply_damage_override's "no entry" branch
+        resets it to baseline (False) first, on every tick, and this is
+        what overrides that back to True -- a scheduled launcher always
+        makes a claim, even before its first raise/stow action has fired
+        (see resolve_posture_schedule's zeroed starting speed/heading).
+        """
+        if not self.has_posture_schedule:
+            return False
+        self.emit_appearance = True
+        self.deactivated = False
+        self.silent = False
+        for idx in due_schedule_entries(self.posture_schedule, self._posture_next_due, elapsed_s):
+            entry = self.posture_schedule[idx]
+            action = entry["action"]
+            if action == "raise":
+                self.launcher_raised = True
+            elif action == "stow":
+                self.launcher_raised = False
+            elif action == "move":
+                self.speed_mps = _POSTURE_MOVE_SPEED_MPS
+            elif action == "stop":
+                self.speed_mps = 0.0
+            LOG.info("posture schedule fired: dis:%d:%d:%d action=%s at t+%gs",
+                     self.site_id, self.app_id, self.entity_id, action, elapsed_s)
+        return True
+
     def step(self, dt_s: float) -> None:
         # Crude flat-earth step. Adequate: nothing downstream does geodesy on
         # these, and dead-reckoning is not being exercised.
         dm = self.speed_mps * dt_s
         self.lat += (dm * math.cos(self.heading)) / 111_320.0
         self.lon += (dm * math.sin(self.heading)) / (111_320.0 * math.cos(math.radians(self.lat)))
-        self.heading += random.uniform(-0.05, 0.05)
+        # A posture-scheduled entity's heading is fixed by resolve_posture_
+        # schedule (0.0) and never jittered -- "A scheduled entity's motion
+        # comes ONLY from its schedule" (--posture-schedule's help).
+        if not self.has_posture_schedule:
+            self.heading += random.uniform(-0.05, 0.05)
 
     def to_pdu(self, exercise_id: int, protocol_version: int) -> EntityStatePdu:
         pdu = EntityStatePdu()
@@ -953,6 +1122,7 @@ class Entity:
                 mobility_kill=self.mobility_kill,
                 firepower_kill=self.firepower_kill,
                 deactivated=self.deactivated,
+                launcher_raised=self.launcher_raised,
             )
             if self.emit_appearance else 0
         )
@@ -1352,6 +1522,18 @@ def main() -> int:
                         "specific.extra' for descriptor.munitionType on every "
                         "scheduled Fire/Detonation. Default is a placeholder "
                         "tuple, not a claim about any real munition.")
+    p.add_argument("--posture-schedule", default=os.getenv("DIS_POSTURE_SCHEDULE", ""),
+                   help="Comma-separated ENTITY:T:ACTION: at elapsed T "
+                        "seconds, apply ACTION (raise|stow|move|stop) to "
+                        "ENTITY. raise/stow set/clear the launcher-raised "
+                        "appearance bit; move holds a constant "
+                        f"{_POSTURE_MOVE_SPEED_MPS:g} m/s, stop holds 0 -- "
+                        "either way this OVERRIDES the entity's random "
+                        "motion entirely, for as long as it has any "
+                        "--posture-schedule entry. ENTITY accepts the same "
+                        "forms as --damage-map (dis:site:app:entity or a "
+                        "bare entity number). Power plant stays on. A bad "
+                        "entry exits non-zero naming it.")
     p.add_argument("--mobility-kill", action="store_true",
                    help="Set the mobility/propulsion-kill bit on damaged "
                         "entities.")
@@ -1427,6 +1609,13 @@ def main() -> int:
     destroy_schedule = parse_destroy_schedule(args.destroy_schedule)
     if destroy_schedule:
         resolve_destroy_schedule(entities, destroy_schedule)
+
+    # --posture-schedule: parsed and matched once at start-up, same point as
+    # --destroy-schedule above. Unlike that schedule, a bad entry here is
+    # fatal (same discipline as --fire-schedule/--detonate-schedule below).
+    posture_schedule = parse_posture_schedule(args.posture_schedule, args.site_id, args.app_id)
+    if posture_schedule:
+        resolve_posture_schedule(entities, posture_schedule)
 
     # --fire-schedule / --detonate-schedule: parsed and cross-linked once at
     # start-up, same point as --destroy-schedule above. Unlike that schedule,
@@ -1562,6 +1751,14 @@ def main() -> int:
                     LOG.info("destroy schedule fired: dis:%d:%d:%d",
                              e.site_id, e.app_id, e.entity_id)
                     e._destroy_logged = True
+                elif e.apply_posture_schedule(elapsed_s):
+                    # apply_posture_schedule logs its own fires (several
+                    # entries over the run, unlike destroy's single edge),
+                    # and -- same reasoning as the destroy branch above --
+                    # a live --damage-map/--destroy-schedule claim on this
+                    # tick wins over posture, so this path is only reached
+                    # when neither of those applied.
+                    pass
                 e.step(per_entity_gap)
                 # ADR-0044 slice A: "removed" fires exactly once, on the
                 # False -> True edge of e.removed, regardless of how many
