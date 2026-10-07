@@ -157,7 +157,7 @@ def test_appearance_carries_the_launcher_raised_bit_and_powerplant_stays_on():
 
 
 def test_stow_is_an_explicit_claim_not_silence():
-    """Red-check 1's shape: an entity with only a '0 stow' action still
+    """Negative case: an entity with only a '0 stow' action still
     MAKES a claim (appearance != 0, power plant on) -- it asserts
     launcher_raised=False rather than saying nothing, which is what lets
     sensor-ingest decode a real (false) value instead of no key at all."""
