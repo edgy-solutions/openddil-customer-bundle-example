@@ -41,6 +41,14 @@ processor_resources:
       root.asset.asset_id = "sample:" + this.sensor_id
       root.asset.callsign = this.callsign | ""
 
+      # Subsystem: when ONE upstream entity is mapped to MORE than one record
+      # (a site's chassis and its sensor, say), the mapper is the only place
+      # that knows which record is which, so it declares it here, e.g.
+      #   root.asset.subsystem = "ASSET_SUBSYSTEM_SENSOR"
+      # Interior code reads that field; it never inspects the asset_id. This
+      # source maps each sensor to exactly one record -- the record IS the
+      # platform -- so the field stays unset (UNSPECIFIED).
+
       # ---------------------------------------------------------------------
       # 2. PLATFORM VARIANT — ADR-0016
       # ---------------------------------------------------------------------
