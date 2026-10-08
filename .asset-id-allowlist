@@ -2,3 +2,7 @@
 # The allowlist only shrinks: an entry that matches nothing fails the check.
 tools/dis-sim/dis_sim.py	"destroy schedule: dis:	source-sim: the DIS simulator logs the ids it emits
 tools/dis-sim/dis_sim.py	"destroy schedule fired: dis:	source-sim: the DIS simulator logs the ids it emits
+tools/dis-sim/dis_sim.py	tok.startswith("dis:")	source-sim: the DIS simulator parses its own launcher config
+tools/dis-sim/dis_sim.py	fire schedule: launcher=dis:	source-sim: the DIS simulator logs the ids it emits
+tools/dis-sim/dis_sim.py	detonate schedule: event=%d launcher=dis:	source-sim: the DIS simulator logs the ids it emits
+tools/dis-sim/dis_sim.py	fire sent event=%d launcher=dis:	source-sim: the DIS simulator logs the ids it emits
