@@ -74,6 +74,7 @@ import logging
 import math
 import os
 import random
+import signal
 import socket
 import sys
 import time
@@ -1437,6 +1438,15 @@ def check_targets_host_conflict(host: str, targets: list[tuple[str, int]]) -> No
         )
 
 
+def _stop_on_sigterm(signum, frame) -> None:
+    """SIGTERM ends the run the same way Ctrl-C does. In a container this
+    process is PID 1, and PID 1 gets no default action for SIGTERM: without a
+    handler it ignores the stop, keeps sending for the whole termination
+    grace period, and overlaps the replacement pod -- two senders for the same
+    entity ids, each resetting the other's posture clock."""
+    raise KeyboardInterrupt
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description="DIS EntityState PDU generator")
     p.add_argument("--host", default=os.getenv("DIS_TARGET_HOST", _DEFAULT_HOST),
@@ -1683,6 +1693,7 @@ def main() -> int:
 
     overridden: set[int] = set()
     start_s = time.monotonic()
+    signal.signal(signal.SIGTERM, _stop_on_sigterm)
     try:
         while True:
             # Re-read the per-asset control once per sweep, not per entity:
