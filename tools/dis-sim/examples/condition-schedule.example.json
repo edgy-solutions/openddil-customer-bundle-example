@@ -1,0 +1,16 @@
+{
+  "cycle_s": 630,
+  "datum_id": 61000,
+  "emission_profiles": {
+    "1000": {"emitter_name": 1001, "beams": 4, "erp_dbm": 70.0, "reduced_power_db": 15}
+  },
+  "steps": [
+    {"entity": 1000, "at_s": 0,   "set": {}},
+    {"entity": 1000, "at_s": 90,  "set": {"damage": "slight"}},
+    {"entity": 1000, "at_s": 180, "set": {"emission": "reduced_beams"}},
+    {"entity": 1000, "at_s": 270, "set": {"datum_health": 40}},
+    {"entity": 1000, "at_s": 360, "set": {"power_plant": "off"}},
+    {"entity": 1000, "at_s": 450, "set": {"damage": "slight", "datum_health": 40}},
+    {"entity": 1000, "at_s": 540, "set": {}}
+  ]
+}

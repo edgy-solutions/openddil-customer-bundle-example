@@ -85,6 +85,12 @@ try:
         EntityStatePdu,
         RemoveEntityPdu,
         EventReportPdu,
+        DataPdu,
+        ElectromagneticEmissionsPdu,
+        EmissionSystemRecord,
+        EmissionSystemBeamRecord,
+        EmitterSystem,
+        EEFundamentalParameterData,
         FixedDatum,
         VariableDatum,
         FirePdu,
@@ -953,6 +959,68 @@ class Entity:
         self.has_posture_schedule = False
         self.launcher_raised = False
 
+        # Power plant lever. True is the historical encoding (appearance_bits'
+        # own default), so every existing run is byte-identical.
+        #
+        # With emit_appearance on, power plant off, undamaged and not
+        # deactivated encodes to an ALL-ZERO field. The receiver reads an
+        # all-zero field as "power plant off" only because the ontology opts
+        # this source into zero_after_claim AND this generator has already
+        # sent a non-zero field for the entity (every claim it makes sets the
+        # power-plant bit). So a condition schedule must open with a
+        # powered-on step before any power-off step; load_condition_schedule
+        # refuses one that does not.
+        self.powerplant_on = True
+
+        # --condition-schedule (see load_condition_schedule / apply_condition_
+        # schedule): this entity's own steps (sorted by at_s), the cycle
+        # length, the "nominal" emission profile, and the step currently in
+        # effect. Empty / None until the loader gives this entity steps -- an
+        # entity without steps makes no emission or Data claim and its
+        # appearance is untouched, same contract as destroy_at_s is None.
+        self.condition_steps: list[dict] = []
+        self.condition_cycle_s: float | None = None
+        self.condition_profile: dict | None = None
+        self.condition: dict | None = None
+        self._condition_logged_idx: int | None = None  # edge-detect: log a step change once
+
+    def apply_condition_schedule(self, elapsed_s: float, appearance_free: bool = True) -> dict | None:
+        """Resolve this entity's --condition-schedule step for `elapsed_s`.
+
+        Returns the step in effect (also kept on self.condition, which main()
+        reads for the EE and Data PDUs), or None before the first step or when
+        the entity has no steps -- in which case NOTHING is touched, so the
+        entity keeps today's behaviour (no claims, no EE, no Data).
+
+        `appearance_free` is False when a live --damage-map override or a
+        fired --destroy-schedule owns the appearance fields this tick: those
+        win, so the step then drives only the EE and Data PDUs. Precedence for
+        the appearance fields is damage-map, then destroy-schedule, then this.
+        launcher_raised and motion are never touched here; the posture
+        schedule keeps owning them.
+        """
+        if not self.condition_steps:
+            self.condition = None
+            return None
+        step = resolve_condition_step(self.condition_steps, self.condition_cycle_s, elapsed_s)
+        self.condition = step
+        if step is None:
+            return None
+        if appearance_free:
+            self.emit_appearance = True
+            self.damage = step["damage"]
+            self.powerplant_on = step["power_plant"] == "on"
+            self.deactivated = step["deactivated"]
+        else:
+            # Another source owns the appearance this tick; do not leave a
+            # power-off from an earlier step encoded into its claim.
+            self.powerplant_on = True
+        if step["idx"] != self._condition_logged_idx:
+            LOG.info("condition step: entity %d at_s=%g set=%s",
+                     self.entity_id, step["at_s"], json.dumps(step["set"], sort_keys=True))
+            self._condition_logged_idx = step["idx"]
+        return step
+
     def apply_damage_override(self, damage_map: dict[str, str]) -> bool:
         """Apply a per-asset override from the declarative map, if present.
 
@@ -1122,6 +1190,7 @@ class Entity:
                 damage=self.damage,
                 mobility_kill=self.mobility_kill,
                 firepower_kill=self.firepower_kill,
+                powerplant_on=self.powerplant_on,
                 deactivated=self.deactivated,
                 launcher_raised=self.launcher_raised,
             )
@@ -1364,7 +1433,278 @@ def event_report_pdu(entity: Entity, entry: dict, exercise_id: int,
     return pdu
 
 
-def serialize(pdu: EntityStatePdu | RemoveEntityPdu | EventReportPdu) -> bytes:
+# ---------------------------------------------------------------------------
+# Condition schedule -- --condition-schedule / DIS_CONDITION_SCHEDULE_PATH
+# ---------------------------------------------------------------------------
+# Flips three independent claims about one entity on a timetable, so a
+# receiver can be shown each source alone and then two at once: the Entity
+# State appearance bits (damage, power plant, deactivated), an Electromagnetic
+# Emission PDU (nominal / fewer beams / lower power / explicit nothing / no
+# PDU at all) and a Data PDU carrying one health datum. Like the event
+# schedule this is PURE TRANSPORT of what the file says; what each claim
+# MEANS is the receiving side's ontology (dis_condition.yaml), not this file.
+#
+# Unset -> load_condition_schedule returns None and nothing about an existing
+# run changes: no new PDUs, no new startup log line.
+#
+# FAILS LOUDLY for the same reason load_event_schedule does: read once at
+# start-up, so a bad entry stops the sim rather than silently never firing.
+_CONDITION_EMISSION_MODES = ("nominal", "reduced_beams", "reduced_power", "zero", "silent")
+_CONDITION_SET_KEYS = ("damage", "power_plant", "deactivated", "emission", "datum_health")
+_CONDITION_DEFAULT_DATUM_ID = 61000   # locally assigned, as in the receiving ontology
+_CONDITION_NOMINAL_HEALTH = 92
+_CONDITION_DEFAULT_REDUCED_DB = 15.0
+
+
+def _is_number(v: object) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _condition_step_state(raw_set: dict) -> dict:
+    """The WHOLE condition state for one step: given keys, else nominal.
+
+    An entity that is off does not radiate, so emission defaults to silent and
+    there is no health datum when the power plant is off, the entity is
+    deactivated, or damage is destroyed. An explicit key always wins over that
+    derived default (a powered-on entity made silent is the sensor-failed case).
+    """
+    damage = raw_set.get("damage", "none")
+    power_plant = raw_set.get("power_plant", "on")
+    deactivated = raw_set.get("deactivated", False)
+    off = power_plant == "off" or deactivated is True or damage == "destroyed"
+    emission = raw_set.get("emission", "silent" if off else "nominal")
+    datum_health = raw_set["datum_health"] if "datum_health" in raw_set else (
+        None if off else _CONDITION_NOMINAL_HEALTH)
+    return {"damage": damage, "power_plant": power_plant, "deactivated": deactivated,
+            "emission": emission, "datum_health": datum_health}
+
+
+def load_condition_schedule(path: str | None, valid_entity_ids: set[int]) -> dict | None:
+    """Validate and return the --condition-schedule file, or None when unset.
+
+    Returns {"cycle_s", "datum_id", "profiles": {entity: profile},
+    "steps": {entity: [step, ...]}} with each entity's steps sorted by at_s
+    and carrying their resolved whole-state fields. Any violation exits
+    non-zero naming the entry; nothing is skipped (see load_event_schedule).
+    """
+    path = path or os.getenv("DIS_CONDITION_SCHEDULE_PATH", "").strip()
+    if not path:
+        return None
+    with open(path, encoding="utf-8") as fh:
+        raw = json.load(fh)
+    if not isinstance(raw, dict):
+        raise SystemExit(f"{path}: expected a JSON object")
+
+    cycle_s = raw.get("cycle_s")
+    if cycle_s is not None and (not _is_number(cycle_s) or cycle_s <= 0):
+        raise SystemExit(f"{path}: 'cycle_s' must be a number > 0 or absent")
+
+    datum_id = raw.get("datum_id", _CONDITION_DEFAULT_DATUM_ID)
+    if isinstance(datum_id, bool) or not isinstance(datum_id, int) or not (0 <= datum_id <= _UINT32_MAX):
+        raise SystemExit(f"{path}: 'datum_id' must be a uint32")
+
+    profiles_raw = raw.get("emission_profiles", {})
+    if not isinstance(profiles_raw, dict):
+        raise SystemExit(f"{path}: 'emission_profiles' must be an object")
+    profiles: dict[int, dict] = {}
+    for key, prof in profiles_raw.items():
+        where = f"{path}: emission_profiles[{key!r}]"
+        eid = _schedule_uint32_key(key, path, 0, "emission_profiles")
+        if eid not in valid_entity_ids:
+            raise SystemExit(f"{where}: entity {eid} is not one of the ids this sim "
+                             f"emits ({sorted(valid_entity_ids)})")
+        if not isinstance(prof, dict):
+            raise SystemExit(f"{where}: expected an object")
+        name = prof.get("emitter_name")
+        if isinstance(name, bool) or not isinstance(name, int) or not (0 <= name <= 0xFFFF):
+            raise SystemExit(f"{where}: 'emitter_name' must be a uint16")
+        beams = prof.get("beams")
+        if isinstance(beams, bool) or not isinstance(beams, int) or not (1 <= beams <= 255):
+            raise SystemExit(f"{where}: 'beams' must be an int 1..255")
+        erp = prof.get("erp_dbm")
+        if not _is_number(erp):
+            raise SystemExit(f"{where}: 'erp_dbm' must be a number")
+        red = prof.get("reduced_power_db", _CONDITION_DEFAULT_REDUCED_DB)
+        if not _is_number(red) or red < 0:
+            raise SystemExit(f"{where}: 'reduced_power_db' must be a number >= 0")
+        profiles[eid] = {"emitter_name": name, "beams": beams, "erp_dbm": float(erp),
+                         "reduced_power_db": float(red)}
+
+    steps_raw = raw.get("steps")
+    if not isinstance(steps_raw, list):
+        raise SystemExit(f"{path}: 'steps' must be a list")
+    steps: dict[int, list[dict]] = {}
+    for i, item in enumerate(steps_raw):
+        where = f"{path}.steps[{i}]"
+        if not isinstance(item, dict):
+            raise SystemExit(f"{where}: expected an object")
+        entity = item.get("entity")
+        if not isinstance(entity, int) or isinstance(entity, bool):
+            raise SystemExit(f"{where}: 'entity' must be an int")
+        if entity not in valid_entity_ids:
+            raise SystemExit(f"{where}: entity {entity} is not one of the ids this sim "
+                             f"emits ({sorted(valid_entity_ids)})")
+        at_s = item.get("at_s")
+        if not _is_number(at_s) or at_s < 0:
+            raise SystemExit(f"{where}: 'at_s' must be a number >= 0")
+        if cycle_s is not None and at_s >= cycle_s:
+            raise SystemExit(f"{where}: 'at_s' {at_s} must be < cycle_s {cycle_s}")
+        s = item.get("set")
+        if not isinstance(s, dict):
+            raise SystemExit(f"{where}: 'set' must be an object")
+        unknown = sorted(set(s) - set(_CONDITION_SET_KEYS))
+        if unknown:
+            raise SystemExit(f"{where}: unknown key(s) in 'set': {unknown} "
+                             f"(allowed: {list(_CONDITION_SET_KEYS)})")
+        if "damage" in s and s["damage"] not in DAMAGE_LEVELS:
+            raise SystemExit(f"{where}: 'damage' must be one of {sorted(DAMAGE_LEVELS)}")
+        if "power_plant" in s and s["power_plant"] not in ("on", "off"):
+            raise SystemExit(f"{where}: 'power_plant' must be \"on\" or \"off\"")
+        if "deactivated" in s and not isinstance(s["deactivated"], bool):
+            raise SystemExit(f"{where}: 'deactivated' must be a bool")
+        if "emission" in s and s["emission"] not in _CONDITION_EMISSION_MODES:
+            raise SystemExit(f"{where}: 'emission' must be one of {list(_CONDITION_EMISSION_MODES)}")
+        if "datum_health" in s and s["datum_health"] is not None:
+            h = s["datum_health"]
+            if isinstance(h, bool) or not isinstance(h, int) or not (0 <= h <= 100):
+                raise SystemExit(f"{where}: 'datum_health' must be null or an int 0..100")
+        state = _condition_step_state(s)
+        if state["emission"] != "silent" and entity not in profiles:
+            raise SystemExit(f"{where}: emission {state['emission']!r} needs an "
+                             f"emission_profiles entry for entity {entity}")
+        steps.setdefault(entity, []).append(
+            {"at_s": float(at_s), "set": dict(s), **state, "_src": i})
+
+    for entity, lst in steps.items():
+        lst.sort(key=lambda st: st["at_s"])
+        first = lst[0]
+        # The all-zero reason (see Entity.powerplant_on): the first claim must
+        # be a powered-on one, or the receiver has no prior non-zero field and
+        # reads the zero as silence.
+        if (first["power_plant"] == "off" or first["deactivated"]) and first["damage"] == "none":
+            raise SystemExit(f"{path}.steps[{first['_src']}]: the first step of entity {entity} "
+                             f"is a power-off/deactivated step with damage none; open with a "
+                             f"powered-on step so the receiver has a non-zero appearance to "
+                             f"compare against")
+        for idx, st in enumerate(lst):
+            st["idx"] = idx
+            del st["_src"]
+
+    print(f"dis-sim: loaded condition schedule from {path}: "
+          f"{sum(len(v) for v in steps.values())} step(s) for entities {sorted(steps)}"
+          f"{'' if cycle_s is None else f', cycle {cycle_s:g}s'}", flush=True)
+    return {"cycle_s": float(cycle_s) if cycle_s is not None else None,
+            "datum_id": datum_id, "profiles": profiles, "steps": steps}
+
+
+def resolve_condition_step(steps: list[dict], cycle_s: float | None, elapsed_s: float) -> dict | None:
+    """The last step with at_s <= (elapsed mod cycle_s, or elapsed), else None."""
+    t = elapsed_s % cycle_s if cycle_s else elapsed_s
+    current = None
+    for st in steps:
+        if st["at_s"] <= t:
+            current = st
+    return current
+
+
+def resolve_condition_schedule(entities: list[Entity], schedule: dict | None) -> None:
+    """Hand each entity its own steps, profile and cycle."""
+    if not schedule:
+        return
+    for e in entities:
+        e.condition_steps = schedule["steps"].get(e.entity_id, [])
+        e.condition_cycle_s = schedule["cycle_s"]
+        e.condition_profile = schedule["profiles"].get(e.entity_id)
+
+
+def _with_length(pdu):
+    """Set pdu.length to the serialized size. opendis 1.0 leaves the header
+    length field at 0 for the caller to set; a receiver that trusts it (or
+    this module's own round-trip test) needs the real value."""
+    pdu.length = len(serialize(pdu))
+    return pdu
+
+
+def emission_pdu(entity: Entity, profile: dict, mode: str, exercise_id: int,
+                 protocol_version: int) -> ElectromagneticEmissionsPdu:
+    """One Electromagnetic Emission PDU (type 23) for `mode`.
+
+    pduType 23 and protocolFamily 6 (Distributed Emission Regeneration) are
+    opendis 1.0's own class defaults for ElectromagneticEmissionsPdu /
+    DistributedEmissionsFamilyPdu; they are set explicitly below to the same
+    values. "silent" is no PDU at all, so it is refused here -- the caller
+    skips the send.
+
+    Counts and lengths opendis 1.0 leaves to the caller, set here:
+    systemDataLength and beamDataLength (32-bit words) and the PDU header
+    length. numberOfSystems and numberOfBeams it derives itself. The beam
+    record is 52 bytes (13 words) with no track/jam records; the system
+    record is 20 bytes of header + location plus its beams.
+    jammingModeSequence is left as an object in opendis, which cannot
+    serialize, so it is set to 0.
+    """
+    if mode == "silent":
+        raise ValueError("silent is no EE PDU at all; do not build one")
+    if mode not in _CONDITION_EMISSION_MODES:
+        raise ValueError(f"unknown emission mode {mode!r}")
+    systems = []
+    if mode != "zero":
+        n = profile["beams"]
+        erp = profile["erp_dbm"]
+        if mode == "reduced_beams":
+            n = max(1, n // 2)
+        elif mode == "reduced_power":
+            erp = erp - profile.get("reduced_power_db", _CONDITION_DEFAULT_REDUCED_DB)
+        beams = [
+            EmissionSystemBeamRecord(
+                beamDataLength=13, beamIDNumber=b + 1,
+                fundamentalParameterData=EEFundamentalParameterData(effectiveRadiatedPower=erp),
+            )
+            for b in range(n)
+        ]
+        for b in beams:
+            b.jammingModeSequence = 0
+        systems.append(EmissionSystemRecord(
+            systemDataLength=5 + 13 * n,
+            emitterSystem=EmitterSystem(emitterName=profile["emitter_name"]),
+            beamRecords=beams,
+        ))
+    pdu = ElectromagneticEmissionsPdu(systems=systems)
+    pdu.protocolVersion = protocol_version
+    pdu.exerciseID = exercise_id
+    pdu.pduType = 23        # Electromagnetic Emission
+    pdu.protocolFamily = 6  # Distributed Emission Regeneration
+    pdu.pduStatus = 0
+    pdu.emittingEntityID.siteID = entity.site_id
+    pdu.emittingEntityID.applicationID = entity.app_id
+    pdu.emittingEntityID.entityID = entity.entity_id
+    return _with_length(pdu)
+
+
+def health_data_pdu(entity: Entity, datum_id: int, value: int, exercise_id: int,
+                    protocol_version: int) -> DataPdu:
+    """One Data PDU (type 20) carrying a single fixed health datum.
+
+    originatingEntityID is the entity, as event_report_pdu does; the receiver
+    is left at the all-zero EntityID. The datum id is locally assigned for
+    this exchange, and the value is a uint32 on the wire (the 0-100 scale is
+    the receiver's ontology, not this function's). Header length is set by the
+    caller in opendis 1.0, so it is set here.
+    """
+    pdu = DataPdu(fixedDatumRecords=[FixedDatum(datum_id, value)])
+    pdu.protocolVersion = protocol_version
+    pdu.exerciseID = exercise_id
+    pdu.pduType = 20        # Data
+    pdu.protocolFamily = 5  # Simulation Management
+    pdu.pduStatus = 0
+    pdu.originatingEntityID.siteID = entity.site_id
+    pdu.originatingEntityID.applicationID = entity.app_id
+    pdu.originatingEntityID.entityID = entity.entity_id
+    return _with_length(pdu)
+
+
+def serialize(pdu: EntityStatePdu | RemoveEntityPdu | EventReportPdu
+              | ElectromagneticEmissionsPdu | DataPdu) -> bytes:
     bio = BytesIO()
     pdu.serialize(DataOutputStream(bio))
     return bio.getvalue()
@@ -1544,6 +1884,19 @@ def main() -> int:
                         "forms as --damage-map (dis:site:app:entity or a "
                         "bare entity number). Power plant stays on. A bad "
                         "entry exits non-zero naming it.")
+    p.add_argument("--condition-schedule", default=os.getenv("DIS_CONDITION_SCHEDULE_PATH", ""),
+                   help="Path to a JSON file that flips an entity's appearance "
+                        "(damage, power plant, deactivated), its Electromagnetic "
+                        "Emission PDU (nominal | reduced_beams | reduced_power | "
+                        "zero | silent) and a Data PDU health datum on a timed "
+                        "list of steps, each step setting the WHOLE state (keys "
+                        "left out are nominal), optionally repeating every "
+                        "cycle_s. A live --damage-map entry, then a fired "
+                        "--destroy-schedule, win over a step's appearance. A "
+                        "power-off step needs a prior powered-on step: an "
+                        "undamaged power-off encodes to an all-zero field that "
+                        "the receiver reads as off only after a non-zero one. "
+                        "A bad entry exits non-zero naming it.")
     p.add_argument("--mobility-kill", action="store_true",
                    help="Set the mobility/propulsion-kill bit on damaged "
                         "entities.")
@@ -1626,6 +1979,12 @@ def main() -> int:
     posture_schedule = parse_posture_schedule(args.posture_schedule, args.site_id, args.app_id)
     if posture_schedule:
         resolve_posture_schedule(entities, posture_schedule)
+
+    # --condition-schedule: validated and handed out once at start-up. Unset
+    # -> None and no entity has steps, so the run is unchanged.
+    condition_schedule = load_condition_schedule(
+        args.condition_schedule, {e.entity_id for e in entities})
+    resolve_condition_schedule(entities, condition_schedule)
 
     # --fire-schedule / --detonate-schedule: parsed and cross-linked once at
     # start-up, same point as --destroy-schedule above. Unlike that schedule,
@@ -1770,6 +2129,14 @@ def main() -> int:
                     # tick wins over posture, so this path is only reached
                     # when neither of those applied.
                     pass
+                # A live damage-map override or a fired destroy-schedule owns
+                # the appearance fields; the condition step then drives only
+                # the EE and Data PDUs. Runs after posture so the step's
+                # deactivated/damage apply, while launcher_raised and motion
+                # stay posture's.
+                appearance_free = (e.entity_id not in now_overridden
+                                   and not (e.destroy_at_s is not None and elapsed_s >= e.destroy_at_s))
+                e.apply_condition_schedule(elapsed_s, appearance_free)
                 e.step(per_entity_gap)
                 # ADR-0044 slice A: "removed" fires exactly once, on the
                 # False -> True edge of e.removed, regardless of how many
@@ -1799,6 +2166,27 @@ def main() -> int:
                     except OSError as exc:
                         errors += 1
                         LOG.warning("send failed: %s", exc)
+                    # Condition claims ride right after the entity's ES, and
+                    # only while it is transmitting at all.
+                    step = e.condition
+                    if step is not None:
+                        pdus = []
+                        if step["emission"] != "silent":
+                            pdus.append(("emission", emission_pdu(
+                                e, e.condition_profile, step["emission"],
+                                args.exercise_id, args.protocol_version)))
+                        if step["datum_health"] is not None:
+                            pdus.append(("health datum", health_data_pdu(
+                                e, condition_schedule["datum_id"], step["datum_health"],
+                                args.exercise_id, args.protocol_version)))
+                        for what, pdu in pdus:
+                            try:
+                                send_pdu(sock, serialize(pdu), args.host, args.port, targets)
+                                sent += 1
+                            except OSError as exc:
+                                errors += 1
+                                LOG.warning("%s send failed for entity %d: %s",
+                                            what, e.entity_id, exc)
                 time.sleep(per_entity_gap)
             if now_overridden != overridden:
                 # Log the CHANGE, not the state: a line every tick would bury
