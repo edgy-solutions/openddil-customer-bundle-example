@@ -95,6 +95,8 @@ try:
         VariableDatum,
         FirePdu,
         DetonationPdu,
+        ResupplyReceivedPdu,
+        SupplyQuantity,
         EntityID,
         EventIdentifier,
         SimulationAddress,
@@ -706,6 +708,96 @@ def detonation_pdu(entry: dict, munition_type: tuple[int, int, int, int, int, in
     pdu.protocolFamily = 2  # Warfare
     pdu.pduStatus = 0
     return pdu
+
+
+# --resupply-schedule (Resupply Received, PDU type 7, Logistics family 3):
+# `L@T[/R]:Q[:S]`, same fatal-on-bad-entry discipline as --fire-schedule.
+# The receiver de-duplicates resupply events on receiver + header timestamp,
+# so unlike every other PDU this module builds, a resupply MUST carry a real
+# DIS timestamp -- dis_timestamp() below. Entries are one-shot unless they
+# carry /R, which becomes a "repeat_s" key for due_schedule_entries().
+def dis_timestamp(now: float | None = None) -> int:
+    """DIS absolute timestamp (bit 0 set) for wall-clock `now` (default
+    time.time()): the fraction of the current hour in the upper 31 bits."""
+    if now is None:
+        now = time.time()
+    return (((int((now % 3600) / 3600 * 2**31)) << 1) | 1) & 0xFFFFFFFF
+
+
+def parse_resupply_schedule(spec: str, site_id: int, app_id: int) -> list[dict]:
+    """Parse `--resupply-schedule` / `DIS_RESUPPLY_SCHEDULE`.
+
+    Format: comma-separated `L@T:Q[:S]` -- receiving launcher L, elapsed
+    seconds T, quantity Q (> 0), optional supplier S (default 0:0:0).
+    `L@T/R:Q[:S]` re-sends every R seconds (R > 0) after T. L/S accept
+    dis:site:app:entity or a bare entity number.
+
+    A bad entry exits non-zero NAMING that entry (see parse_fire_schedule).
+    """
+    entries: list[dict] = []
+    for tok in (t.strip() for t in (spec or "").split(",")):
+        if not tok:
+            continue
+        try:
+            launcher_s, sep, rest = tok.partition("@")
+            if not sep:
+                raise ValueError("missing '@T:Q[:S]'")
+            # maxsplit=2: S can contain ':' (dis:site:app:entity).
+            fields = rest.split(":", 2)
+            if len(fields) not in (2, 3):
+                raise ValueError("expected T:Q or T:Q:S")
+            t_s, has_repeat, r_s = fields[0].partition("/")
+            sup_s = fields[2] if len(fields) == 3 else None
+            launcher = _parse_effector_entity_key(launcher_s, site_id, app_id)
+            t = float(t_s)
+            if t < 0:
+                raise ValueError("T must be >= 0")
+            repeat_s = None
+            if has_repeat:
+                repeat_s = float(r_s)
+                if not repeat_s > 0:
+                    raise ValueError("R must be > 0")
+            qty = float(fields[1])
+            if not (qty > 0 and math.isfinite(qty)):
+                raise ValueError("Q must be > 0")
+            supplier = (_parse_effector_entity_key(sup_s, site_id, app_id)
+                        if sup_s else (0, 0, 0))
+        except ValueError as exc:
+            raise SystemExit(f"--resupply-schedule: bad entry {tok!r}: {exc}")
+        entry = {"launcher": launcher, "t": t, "quantity": qty, "supplier": supplier}
+        if repeat_s is not None:
+            entry["repeat_s"] = repeat_s
+        entries.append(entry)
+    return entries
+
+
+def resupply_pdu(entry: dict, munition_type: tuple[int, int, int, int, int, int, int],
+                 exercise_id: int, protocol_version: int,
+                 now: float | None = None) -> ResupplyReceivedPdu:
+    """One Resupply Received PDU (type 7, Logistics family) for one due
+    --resupply-schedule entry: one supply, the --munition-type tuple the
+    Fire/Detonation PDUs use, at entry["quantity"]. Header timestamp is a
+    real DIS timestamp (see dis_timestamp) so repeats stay distinct events."""
+    pdu = ResupplyReceivedPdu(
+        supplies=[SupplyQuantity(
+            supplyType=EntityType(
+                entityKind=munition_type[0], domain=munition_type[1],
+                country=munition_type[2], category=munition_type[3],
+                subcategory=munition_type[4], specific=munition_type[5],
+                extra=munition_type[6],
+            ),
+            quantity=entry["quantity"],
+        )],
+    )
+    pdu.receivingEntityID.siteID, pdu.receivingEntityID.applicationID, pdu.receivingEntityID.entityID = entry["launcher"]
+    pdu.supplyingEntityID.siteID, pdu.supplyingEntityID.applicationID, pdu.supplyingEntityID.entityID = entry["supplier"]
+    pdu.protocolVersion = protocol_version
+    pdu.exerciseID = exercise_id
+    pdu.pduType = 7         # Resupply Received
+    pdu.protocolFamily = 3  # Logistics
+    pdu.pduStatus = 0
+    pdu.timestamp = dis_timestamp(now)
+    return _with_length(pdu)
 
 
 def reload_damage_map(path: str) -> dict[str, str]:
@@ -1867,6 +1959,15 @@ def main() -> int:
                         "is REQUIRED when E is not in --fire-schedule (an "
                         "orphan detonation). A bad entry exits non-zero "
                         "naming it.")
+    p.add_argument("--resupply-schedule", default=os.getenv("DIS_RESUPPLY_SCHEDULE", ""),
+                   help="Comma-separated L@T[/R]:Q[:S]: at elapsed T seconds, "
+                        "send one Resupply Received PDU to launcher L "
+                        "(receivingEntityID) from supplier S "
+                        "(supplyingEntityID, default 0:0:0) carrying one "
+                        "supply of --munition-type, quantity Q (> 0). With "
+                        "/R, re-send every R seconds after T. L/S accept "
+                        "dis:site:app:entity or a bare entity number. A bad "
+                        "entry exits non-zero naming it.")
     p.add_argument("--munition-type", default=os.getenv("DIS_MUNITION_TYPE", "2.9.225.2.1.1.0"),
                    help="DIS 7-tuple 'kind.domain.country.category.subcategory."
                         "specific.extra' for descriptor.munitionType on every "
@@ -2000,6 +2101,15 @@ def main() -> int:
                  *entry["launcher"], entry["event"], entry["quantity"], entry["t"],
                  "" if entry["target"] == (0, 0, 0)
                  else f" target=dis:{entry['target'][0]}:{entry['target'][1]}:{entry['target'][2]}")
+    resupply_schedule = parse_resupply_schedule(
+        args.resupply_schedule, args.site_id, args.app_id,
+    )
+    for entry in resupply_schedule:
+        LOG.info("resupply schedule: launcher=dis:%d:%d:%d qty=%g at t+%gs%s%s",
+                 *entry["launcher"], entry["quantity"], entry["t"],
+                 f" every {entry['repeat_s']:g}s" if entry.get("repeat_s") else "",
+                 "" if entry["supplier"] == (0, 0, 0)
+                 else f" supplier=dis:{entry['supplier'][0]}:{entry['supplier'][1]}:{entry['supplier'][2]}")
     for entry in detonate_schedule:
         LOG.info("detonate schedule: event=%d launcher=dis:%d:%d:%d result=%d at t+%gs",
                  entry["event"], *entry["launcher"], entry["result"], entry["t"])
@@ -2017,6 +2127,8 @@ def main() -> int:
     # next_due[i] set to None after firing, never due again).
     fire_schedule_next_due = [entry["t"] for entry in fire_schedule]
     detonate_schedule_next_due = [entry["t"] for entry in detonate_schedule]
+    # Resupply entries repeat only when they carry "repeat_s" (the /R form).
+    resupply_schedule_next_due = [entry["t"] for entry in resupply_schedule]
     for entry in event_schedule:
         LOG.info(
             "event schedule: entity %d event_type=%d at t+%gs%s",
@@ -2111,6 +2223,22 @@ def main() -> int:
                     errors += 1
                     LOG.warning("detonation send failed for event %d: %s",
                                entry["event"], exc)
+
+            # Scheduled Resupply Received PDUs (--resupply-schedule), same
+            # cadence; repeat entries come back round via repeat_s.
+            for idx in due_schedule_entries(resupply_schedule, resupply_schedule_next_due, elapsed_s):
+                entry = resupply_schedule[idx]
+                pdu = resupply_pdu(entry, munition_type, args.exercise_id,
+                                   args.protocol_version)
+                try:
+                    send_pdu(sock, serialize(pdu), args.host, args.port, targets)
+                    sent += 1
+                    LOG.info("resupply sent launcher=dis:%d:%d:%d qty=%g",
+                             *entry["launcher"], entry["quantity"])
+                except OSError as exc:
+                    errors += 1
+                    LOG.warning("resupply send failed for launcher dis:%d:%d:%d: %s",
+                                *entry["launcher"], exc)
 
             now_overridden = set()
             for e in entities:
