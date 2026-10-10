@@ -41,6 +41,8 @@ metadata:
     app.kubernetes.io/name: dis-sim
     app.kubernetes.io/component: dis-sim-edge-northpoint
     app.kubernetes.io/part-of: openddil
+    # The scenario reset finds simulators by this label, not by name.
+    openddil.io/role: simulator
 spec:
   replicas: 1
   selector:
@@ -115,6 +117,8 @@ metadata:
     app.kubernetes.io/name: dis-sim
     app.kubernetes.io/component: dis-sim-edge-capeverdant
     app.kubernetes.io/part-of: openddil
+    # The scenario reset finds simulators by this label, not by name.
+    openddil.io/role: simulator
 spec:
   replicas: 1
   selector:
