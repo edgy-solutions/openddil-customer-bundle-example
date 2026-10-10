@@ -1254,6 +1254,11 @@ class Entity:
         return True
 
     def step(self, dt_s: float) -> None:
+        # A destroyed entity does not drive; reporting motion for it would be
+        # the simulator lying.
+        if self.damage == "destroyed":
+            self.speed_mps = 0.0
+            return
         # Crude flat-earth step. Adequate: nothing downstream does geodesy on
         # these, and dead-reckoning is not being exercised.
         dm = self.speed_mps * dt_s

@@ -159,3 +159,45 @@ def test_unrelated_entity_is_untouched_when_another_entity_fires():
     assert unrelated.to_pdu(exercise_id=1, protocol_version=7).entityAppearance == 0
     # The scheduled one did fire.
     assert scheduled.damage == "destroyed"
+
+
+# ---------------------------------------------------------------------------
+# A destroyed entity does not move and reports zero velocity
+# ---------------------------------------------------------------------------
+
+def _linear_speed(e: Entity) -> float:
+    v = e.to_pdu(exercise_id=1, protocol_version=7).entityLinearVelocity
+    return (v.x ** 2 + v.y ** 2 + v.z ** 2) ** 0.5
+
+
+def test_scheduled_destroy_stops_motion_and_velocity():
+    e = _entity()
+    e.destroy_at_s = 30.0
+    assert e.speed_mps > 0
+    e.step(1.0)  # moving before the schedule fires
+    e.apply_destroy_schedule(30.0)
+    assert e.damage == "destroyed"
+    lat, lon = e.lat, e.lon
+    for _ in range(10):
+        e.step(1.0)
+    assert (e.lat, e.lon) == (lat, lon)
+    assert _linear_speed(e) == 0.0
+
+
+def test_undestroyed_entity_still_moves_control():
+    e = _entity()
+    lat, lon = e.lat, e.lon
+    for _ in range(10):
+        e.step(1.0)
+    assert (e.lat, e.lon) != (lat, lon)
+    assert _linear_speed(e) > 0.0
+
+
+def test_directly_destroyed_entity_does_not_move():
+    e = _entity()
+    e.damage = "destroyed"
+    lat, lon = e.lat, e.lon
+    for _ in range(10):
+        e.step(1.0)
+    assert (e.lat, e.lon) == (lat, lon)
+    assert _linear_speed(e) == 0.0
