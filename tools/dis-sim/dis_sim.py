@@ -838,8 +838,11 @@ def reload_damage_map(path: str) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# --posture-schedule (launcher posture: raise/stow the launcher-raised
-# appearance bit, move/stop a scheduled entity's own motion). Same shape as
+# --posture-schedule (raise/stow = deploy/undeploy: for a launcher the
+# launcher-raised appearance bit, for a sensor -- an entity with an emission
+# profile in the condition schedule -- its emission, stow sending an
+# explicit zero-beam EE until raise; move/stop drive the entity's own
+# motion). Same shape as
 # --fire-schedule/--detonate-schedule above -- a test fixture read once at
 # start-up, so a malformed entry is FATAL (SystemExit), not logged-and-
 # skipped like --destroy-schedule's live operator control.
@@ -1050,6 +1053,9 @@ class Entity:
         self._posture_next_due: list[float | None] = []
         self.has_posture_schedule = False
         self.launcher_raised = False
+        # Sensor stow (posture schedule): True -> main loop sends a zero-beam
+        # EE every tick instead of the condition step's emission mode.
+        self.emission_stowed = False
 
         # Power plant lever. True is the historical encoding (appearance_bits'
         # own default), so every existing run is byte-identical.
@@ -1232,6 +1238,13 @@ class Entity:
         what overrides that back to True -- a scheduled launcher always
         makes a claim, even before its first raise/stow action has fired
         (see resolve_posture_schedule's zeroed starting speed/heading).
+
+        raise/stow mean deploy/undeploy. For a launcher they set/clear
+        launcher_raised. For a sensor -- an entity with a condition-schedule
+        emission profile (condition_profile is set by resolve_condition_
+        schedule before the loop that calls this, so it is known from t=0)
+        -- they instead clear/set emission_stowed (stow = explicit zero-beam
+        EE every tick until raise) and launcher_raised is left alone.
         """
         if not self.has_posture_schedule:
             return False
@@ -1241,7 +1254,9 @@ class Entity:
         for idx in due_schedule_entries(self.posture_schedule, self._posture_next_due, elapsed_s):
             entry = self.posture_schedule[idx]
             action = entry["action"]
-            if action == "raise":
+            if action in ("raise", "stow") and self.condition_profile is not None:
+                self.emission_stowed = action == "stow"
+            elif action == "raise":
                 self.launcher_raised = True
             elif action == "stow":
                 self.launcher_raised = False
@@ -1722,6 +1737,14 @@ def _with_length(pdu):
     return pdu
 
 
+def effective_emission_mode(step_mode: str, stowed: bool) -> str:
+    """Emission mode actually sent: a stowed sensor radiates zero beams.
+    "silent" (a fault beat, no EE at all) stays silent; "zero" stays zero."""
+    if stowed and step_mode != "silent":
+        return "zero"
+    return step_mode
+
+
 def emission_pdu(entity: Entity, profile: dict, mode: str, exercise_id: int,
                  protocol_version: int) -> ElectromagneticEmissionsPdu:
     """One Electromagnetic Emission PDU (type 23) for `mode`.
@@ -1981,8 +2004,12 @@ def main() -> int:
     p.add_argument("--posture-schedule", default=os.getenv("DIS_POSTURE_SCHEDULE", ""),
                    help="Comma-separated ENTITY:T:ACTION: at elapsed T "
                         "seconds, apply ACTION (raise|stow|move|stop) to "
-                        "ENTITY. raise/stow set/clear the launcher-raised "
-                        "appearance bit; move holds a constant "
+                        "ENTITY. raise/stow mean deploy/undeploy: for a "
+                        "launcher they set/clear the launcher-raised "
+                        "appearance bit; for a sensor (an entity with an "
+                        "emission profile in --condition-schedule) stow "
+                        "sends an explicit zero-beam EE every tick until "
+                        "raise, and the launcher bit is untouched; move holds a constant "
                         f"{_POSTURE_MOVE_SPEED_MPS:g} m/s, stop holds 0 -- "
                         "either way this OVERRIDES the entity's random "
                         "motion entirely, for as long as it has any "
@@ -2304,9 +2331,11 @@ def main() -> int:
                     step = e.condition
                     if step is not None:
                         pdus = []
-                        if step["emission"] != "silent":
+                        emit_mode = effective_emission_mode(
+                            step["emission"], e.emission_stowed)
+                        if emit_mode != "silent":
                             pdus.append(("emission", emission_pdu(
-                                e, e.condition_profile, step["emission"],
+                                e, e.condition_profile, emit_mode,
                                 args.exercise_id, args.protocol_version)))
                         if step["datum_health"] is not None:
                             pdus.append(("health datum", health_data_pdu(
