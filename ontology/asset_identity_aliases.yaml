@@ -16,15 +16,15 @@ aliases:
   dis:
     - dis_entity_id: { site: 1, application: 1, entity: 4773 }
       canonical_asset_id: "USA-ARMY-1HBCT-M1A2-4773"
-      notes: "Placeholder M1A2 SEPv3 hull #4773 (VR-Forces simulation)"
+      notes: "Placeholder M1A2 SEPv3 hull #4773 (simulation)"
 
     - dis_entity_id: { site: 1, application: 1, entity: 4774 }
       canonical_asset_id: "USA-ARMY-1HBCT-M1A2-4774"
-      notes: "Placeholder M1A2 SEPv3 hull #4774 (VR-Forces simulation)"
+      notes: "Placeholder M1A2 SEPv3 hull #4774 (simulation)"
 
     - dis_entity_id: { site: 1, application: 1, entity: 8001 }
       canonical_asset_id: "USA-ARMY-CAB-AH64-8001"
-      notes: "Placeholder AH-64E tail #8001 (VR-Forces simulation)"
+      notes: "Placeholder AH-64E tail #8001 (simulation)"
 
   sim_a:
     - native: "SIM-A-001"

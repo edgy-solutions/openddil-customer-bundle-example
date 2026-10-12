@@ -16,8 +16,8 @@
       "type": "string",
       "description": "Native sensor identity. The sample deployment's convention encodes originating nation and site as underscore-delimited leading segments: <NATION>_<SITE>_<SYSTEM>_<ROLE>. The mapping parses the nation prefix to stamp Provenance.originator_nation (ADR-0029). Nations here are FICTIONAL.",
       "examples": [
-        "ATL_NORTHPOINT_SENTRY1_Radar",
-        "BDR_CAPEVERDANT_SENTRY2_Radar",
+        "ATL_NORTH_SENTRY1_Radar",
+        "BDR_SOUTH_SENTRY2_Radar",
         "SYL_HIGHMOOR_SENTRY1_Radar"
       ]
     },

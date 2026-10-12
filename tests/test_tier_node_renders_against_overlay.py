@@ -102,7 +102,7 @@ def test_baseline_fixture_matches_the_mapping_variant():
 
 
 def test_tier_node_renders_against_this_overlay(rendered):
-    assert "tier-pg-edge-northpoint" in rendered, (
+    assert "tier-pg-edge-north" in rendered, (
         "the chart did not render tier-node objects for the fixture's tiers"
     )
 
@@ -122,7 +122,7 @@ def test_every_declared_component_actually_renders(rendered, component):
     if component == "tier-topaz" and not _topaz_enabled():
         pytest.skip("tierNode.topaz.enabled is false in this fixture "
                     "(Arc 2 reserved seat; needs a config file to run)")
-    assert f"{component}-edge-northpoint" in rendered, (
+    assert f"{component}-edge-north" in rendered, (
         f"component {component!r} is named in the tier-node template's header "
         f"but does not appear in the rendered output. Exit-zero proved the "
         f"render ran, not that it rendered what the header promises."
@@ -142,7 +142,7 @@ def test_tier_scoped_projector_config_omits_root_only_topics(rendered):
     deliberately absent — a test that fails for the wrong reason would
     equally have passed for the wrong reason.
     """
-    start = rendered.index("tier-projector-config-edge-northpoint")
+    start = rendered.index("tier-projector-config-edge-north")
     window = rendered[start:start + 6000]
     subscribed = {
         line.split("- topic:", 1)[1].strip()

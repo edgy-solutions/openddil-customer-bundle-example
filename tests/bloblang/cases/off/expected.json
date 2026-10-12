@@ -1,6 +1,6 @@
 {
   "asset": {
-    "asset_id": "sample:ATL_NORTHPOINT_S01",
+    "asset_id": "sample:ATL_NORTH_S01",
     "callsign": "WATCHTOWER-1",
     "platform_variant": "MRAD_Sensor"
   },

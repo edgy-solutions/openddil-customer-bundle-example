@@ -31,10 +31,10 @@
 # All three are invented. ADR-0029's cross-national demonstration is intended
 # to run publicly in CI against exactly these.
 edges:
-  - id: edge-northpoint
+  - id: edge-north
     region: region-north
     udpPort: 62040
-  - id: edge-capeverdant
+  - id: edge-south
     region: region-south
     udpPort: 62041
 
@@ -51,8 +51,8 @@ tierNode:
   # Empty => every configured tier. Named explicitly here so the fixture
   # exercises the tier-selection path rather than only the default.
   tiers:
-    - edge-northpoint
-    - edge-capeverdant
+    - edge-north
+    - edge-south
 
   postgres:
     # emptyDir keeps the fixture runnable on clusters without a default

@@ -15,7 +15,7 @@ which is precisely — and only — what is needed to prove that the chain
     UDP -> sensor-ingest -> decode -> Bloblang -> Silver -> projector
          -> tier store -> fusion -> bridge -> buffer -> sever -> drain
 carries real traffic. For anything requiring behaviour, use a real CGF
-(VR-Forces, mixr).
+(the co-located simulator, mixr).
 
 WHY THE FRONT DOOR RATHER THAN INJECTING MID-PIPELINE
 -----------------------------------------------------
@@ -141,7 +141,7 @@ RECOGNISED_TYPES: list[tuple[tuple[int, int, int, int, int, int, int], str]] = [
 ]
 
 # ---------------------------------------------------------------------------
-# THE ENUMERATION LIST IS A DATA DROP (VR-Forces readiness)
+# THE ENUMERATION LIST IS A DATA DROP (co-located simulator readiness)
 # ---------------------------------------------------------------------------
 # The list above is a DEFAULT, not the contract. A scenario names the entity
 # types it will actually emit, and that list arrives as data — from whoever
@@ -1931,7 +1931,7 @@ def main() -> int:
                    help="Comma-separated entity ids to emit INSTEAD of the "
                         "contiguous default fleet, e.g. '1099'.")
     p.add_argument("--interval", type=float, default=float(os.getenv("DIS_INTERVAL_S", "5.0")),
-                   help="heartbeat seconds per entity (VR-Forces default is ~5s)")
+                   help="heartbeat seconds per entity (common simulator default is ~5s)")
     p.add_argument("--exercise-id", type=int, default=int(os.getenv("DIS_EXERCISE_ID", "1")))
     p.add_argument("--protocol-version", type=int, default=int(os.getenv("DIS_PROTOCOL_VERSION", "7")))
     p.add_argument("--site-id", type=int, default=int(os.getenv("DIS_SITE_ID", "1")))
