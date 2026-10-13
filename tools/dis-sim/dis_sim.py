@@ -77,7 +77,9 @@ import random
 import signal
 import socket
 import sys
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 
 try:
@@ -846,6 +848,9 @@ def reload_damage_map(path: str) -> dict[str, str]:
 # --fire-schedule/--detonate-schedule above -- a test fixture read once at
 # start-up, so a malformed entry is FATAL (SystemExit), not logged-and-
 # skipped like --destroy-schedule's live operator control.
+# The same actions are accepted by the optional --control-port listener (see
+# parse_posture_arm): a test/lab lever, off by default, unauthenticated,
+# meant to be reachable only from the caller a NetworkPolicy allows.
 _POSTURE_ACTIONS = ("raise", "stow", "move", "stop")
 # Constant speed a "move" action gives a scheduled entity ("5 m/s along x" --
 # see Entity.step()'s posture-schedule branch, which holds heading at 0.0 so
@@ -937,6 +942,286 @@ def resolve_posture_schedule(entities: list[Entity], schedule: list[dict]) -> No
         for entry in e.posture_schedule:
             LOG.info("posture schedule: entity %d:%d:%d action=%s at t+%gs",
                      e.site_id, e.app_id, e.entity_id, entry["action"], entry["t"])
+
+
+# ---------------------------------------------------------------------------
+# --control-port: arm posture entries relative to NOW. A test/lab lever, OFF
+# by default (port 0 starts no listener and no thread). The listener is
+# unauthenticated: reach it only from the caller a NetworkPolicy allows. The
+# handler validates and parks entries in a lock-protected pending list; the
+# main loop drains that list once per sweep into each entity's own posture
+# schedule, the same one --posture-schedule fills, so firing is unchanged.
+_CONTROL_MAX_BODY = 16 * 1024
+_CONTROL_MAX_ENTRIES = 32
+_CONTROL_MAX_AFTER_S = 3600.0
+_CONTROL_MAX_DISTANCE_M = 50000.0
+
+
+class PostureArmError(Exception):
+    """A rejected arm request: `status` is the HTTP status to answer with."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+def _is_number(v: object) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def parse_posture_arm(body: object, site_id: int, app_id: int,
+                      known: set[tuple[int, int, int]], elapsed_s: float) -> list[dict]:
+    """Validate an arm request body into posture entries, all-or-nothing.
+
+    `body` is `{"entries": [{"entity", "after_s", "action"[, "distance_m"]}]}`.
+    Malformed input raises PostureArmError(400) naming the entry index; an
+    entity matching nothing in `known` raises PostureArmError(404). Returned
+    entries carry absolute elapsed times (`elapsed_s + after_s`), sorted by t;
+    a `move` with `distance_m` also yields a stop at t + distance_m / the
+    posture move speed.
+    """
+    if not isinstance(body, dict):
+        raise PostureArmError(400, "body must be a JSON object")
+    entries = body.get("entries")
+    if not isinstance(entries, list):
+        raise PostureArmError(400, "'entries' must be a list")
+    if not 1 <= len(entries) <= _CONTROL_MAX_ENTRIES:
+        raise PostureArmError(400, f"'entries' must hold 1..{_CONTROL_MAX_ENTRIES} entries")
+    known_keys: set[str] = set()
+    for s, a, e in known:
+        known_keys.update(_damage_map_key(s, a, e))
+    out: list[dict] = []
+    for i, raw in enumerate(entries):
+        where = f"entry {i}"
+        if not isinstance(raw, dict):
+            raise PostureArmError(400, f"{where}: must be an object")
+        ent = raw.get("entity")
+        if isinstance(ent, bool) or not isinstance(ent, (str, int)):
+            raise PostureArmError(400, f"{where}: 'entity' must be a string or integer")
+        try:
+            key = _parse_effector_entity_key(str(ent), site_id, app_id)
+        except ValueError as exc:
+            raise PostureArmError(400, f"{where}: bad 'entity': {exc}")
+        after_s = raw.get("after_s")
+        if not _is_number(after_s) or not 0 <= after_s <= _CONTROL_MAX_AFTER_S:
+            raise PostureArmError(
+                400, f"{where}: 'after_s' must be a number, 0 <= after_s <= {_CONTROL_MAX_AFTER_S:g}")
+        action = raw.get("action")
+        if action not in _POSTURE_ACTIONS:
+            raise PostureArmError(400, f"{where}: 'action' must be one of {list(_POSTURE_ACTIONS)}")
+        distance = raw.get("distance_m")
+        if "distance_m" in raw:
+            if action != "move":
+                raise PostureArmError(400, f"{where}: 'distance_m' is only valid with action 'move'")
+            if not _is_number(distance) or not 0 < distance <= _CONTROL_MAX_DISTANCE_M:
+                raise PostureArmError(
+                    400, f"{where}: 'distance_m' must be a number, 0 < distance_m <= "
+                         f"{_CONTROL_MAX_DISTANCE_M:g}")
+        if not any(k in known_keys for k in _damage_map_key(*key)):
+            raise PostureArmError(
+                404, f"{where}: entity dis:{key[0]}:{key[1]}:{key[2]} matches nothing in this sim")
+        t = elapsed_s + float(after_s)
+        out.append({"entity": key, "t": t, "action": action, "source": "control"})
+        if action == "move" and "distance_m" in raw:
+            out.append({"entity": key, "t": t + float(distance) / _POSTURE_MOVE_SPEED_MPS,
+                        "action": "stop", "source": "control-auto-stop"})
+    out.sort(key=lambda e: e["t"])
+    return out
+
+
+def _entity_label(key: tuple[int, int, int]) -> str:
+    return f"dis:{key[0]}:{key[1]}:{key[2]}"
+
+
+class PostureControl:
+    """Shared state between the control listener threads and the main loop."""
+
+    def __init__(self, site_id: int, app_id: int, known: set[tuple[int, int, int]],
+                 start_s: float, entities: list[Entity] | None = None):
+        self.site_id = site_id
+        self.app_id = app_id
+        self.known = set(known)
+        self.start_s = start_s  # the main loop's time.monotonic() origin
+        self.entities: list[Entity] = entities if entities is not None else []
+        self._lock = threading.Lock()
+        self._pending: list[dict] = []
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.start_s
+
+    def arm(self, body: object, client: str) -> tuple[float, list[dict]]:
+        """Validate and queue; raises PostureArmError, arming nothing."""
+        elapsed_s = self.elapsed()
+        armed = parse_posture_arm(body, self.site_id, self.app_id, self.known, elapsed_s)
+        with self._lock:
+            self._pending.extend(armed)
+        for entry in armed:
+            s, a, e = entry["entity"]
+            LOG.info("posture arm (control, from %s): entity %d:%d:%d action=%s at t+%gs",
+                     client, s, a, e, entry["action"], entry["t"])
+        return elapsed_s, armed
+
+    @staticmethod
+    def _index(entities: list[Entity]) -> dict[str, Entity]:
+        by_key: dict[str, Entity] = {}
+        for e in entities:
+            for key in _damage_map_key(e.site_id, e.app_id, e.entity_id):
+                by_key[key] = e
+        return by_key
+
+    def drain(self, entities: list[Entity], elapsed_s: float) -> int:
+        """Move pending arms into their entities' posture schedules.
+
+        Called by the main loop once per sweep, before entities are stepped.
+        Returns how many entries were applied.
+        """
+        with self._lock:
+            batch, self._pending = self._pending, []
+        if not batch:
+            return 0
+        by_key = self._index(entities)
+        applied = 0
+        for entry in batch:
+            match = next((by_key[k] for k in _damage_map_key(*entry["entity"]) if k in by_key), None)
+            if match is None:
+                LOG.warning("posture arm (control): entity %s matches nothing; entry dropped",
+                            _entity_label(entry["entity"]))
+                continue
+            if not match.has_posture_schedule:
+                match.has_posture_schedule = True
+                match.speed_mps = 0.0
+                match.heading = 0.0
+            match.posture_schedule.append(entry)
+            match._posture_next_due.append(entry["t"])
+            applied += 1
+        LOG.info("posture arm (control): drained %d entr%s at t+%.2fs",
+                 applied, "y" if applied == 1 else "ies", elapsed_s)
+        return applied
+
+    def snapshot(self) -> dict:
+        """Point-in-time view for GET /posture; read without stopping the loop."""
+        with self._lock:
+            pending = list(self._pending)
+        entities = self.entities
+        by_key = self._index(entities)
+        undrained: dict[int, list[dict]] = {}
+        for entry in pending:
+            m = next((by_key[k] for k in _damage_map_key(*entry["entity"]) if k in by_key), None)
+            if m is not None:
+                undrained.setdefault(id(m), []).append({"t": entry["t"], "action": entry["action"]})
+        rows = []
+        for e in entities:
+            queued = list(undrained.get(id(e), []))
+            if not e.has_posture_schedule and not queued:
+                continue
+            sched = list(e.posture_schedule)
+            due = list(e._posture_next_due)
+            live = [{"t": ent["t"], "action": ent["action"]}
+                    for ent, nd in zip(sched, due) if nd is not None]
+            rows.append({
+                "entity": _entity_label((e.site_id, e.app_id, e.entity_id)),
+                "speed_mps": e.speed_mps,
+                "launcher_raised": e.launcher_raised,
+                "emission_stowed": e.emission_stowed,
+                "pending": sorted(live + queued, key=lambda x: x["t"]),
+            })
+        return {"elapsed_s": self.elapsed(), "entities": rows}
+
+
+def make_control_server(port: int, control: PostureControl,
+                        host: str = "0.0.0.0") -> ThreadingHTTPServer:
+    """Build (not start) the control listener. Port 0 binds an ephemeral port."""
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def log_message(self, fmt, *args):
+            LOG.debug("control: " + fmt, *args)
+
+        def _send(self, status: int, payload: object) -> None:
+            data = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _drain_body(self) -> None:
+            # Read (a bounded amount of) an unread request body before an
+            # early answer: closing with unread bytes resets the connection
+            # before the client reads the response.
+            try:
+                remaining = min(int(self.headers.get("Content-Length") or 0),
+                                64 * _CONTROL_MAX_BODY)
+            except ValueError:
+                remaining = 0
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 65536))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+
+        def _dispatch(self, method: str) -> None:
+            path = self.path.split("?", 1)[0]
+            routes = {"/healthz": "GET", "/posture": "GET", "/posture/arm": "POST"}
+            if path not in routes:
+                self._drain_body()
+                self._send(404, {"error": "not found"})
+                return
+            if routes[path] != method:
+                self._drain_body()
+                self._send(405, {"error": f"{method} not allowed on {path}"})
+                return
+            if path == "/healthz":
+                self._send(200, {"status": "ok"})
+            elif path == "/posture":
+                self._send(200, control.snapshot())
+            else:
+                self._arm()
+
+        def _arm(self) -> None:
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                self._send(400, {"error": "bad Content-Length"})
+                return
+            if length > _CONTROL_MAX_BODY:
+                self._drain_body()
+                self._send(413, {"error": f"body exceeds {_CONTROL_MAX_BODY} bytes"})
+                return
+            try:
+                body = json.loads(self.rfile.read(length) or b"")
+            except (ValueError, UnicodeDecodeError):
+                self._send(400, {"error": "body is not valid JSON"})
+                return
+            try:
+                elapsed_s, armed = control.arm(body, self.client_address[0])
+            except PostureArmError as exc:
+                self._send(exc.status, {"error": exc.message})
+                return
+            self._send(202, {"elapsed_s": elapsed_s, "armed": [
+                {"entity": _entity_label(a["entity"]), "action": a["action"],
+                 "t": a["t"], "source": a["source"]} for a in armed]})
+
+        def do_GET(self):
+            self._dispatch("GET")
+
+        def do_POST(self):
+            self._dispatch("POST")
+
+        def do_PUT(self):
+            self._dispatch("PUT")
+
+        def do_DELETE(self):
+            self._dispatch("DELETE")
+
+        def do_PATCH(self):
+            self._dispatch("PATCH")
+
+    srv = ThreadingHTTPServer((host, port), Handler)
+    srv.daemon_threads = True
+    return srv
 
 
 # Bit 15, LAND platforms only -- "launcher raised" (see
@@ -2017,6 +2302,14 @@ def main() -> int:
                         "forms as --damage-map (dis:site:app:entity or a "
                         "bare entity number). Power plant stays on. A bad "
                         "entry exits non-zero naming it.")
+    p.add_argument("--control-port", type=int, default=int(os.getenv("DIS_CONTROL_PORT", "0")),
+                   help="TCP port for an optional HTTP control listener (0 = off, "
+                        "the default: no listener, no thread). A test/lab lever: "
+                        "POST /posture/arm arms raise|stow|move|stop entries "
+                        "relative to now into the same per-entity posture schedule "
+                        "--posture-schedule fills; GET /posture shows pending arms; "
+                        "GET /healthz. Unauthenticated -- make it reachable only "
+                        "from the caller a NetworkPolicy allows.")
     p.add_argument("--condition-schedule", default=os.getenv("DIS_CONDITION_SCHEDULE_PATH", ""),
                    help="Path to a JSON file that flips an entity's appearance "
                         "(damage, power plant, deactivated), its Electromagnetic "
@@ -2196,6 +2489,15 @@ def main() -> int:
 
     overridden: set[int] = set()
     start_s = time.monotonic()
+    control: PostureControl | None = None
+    if args.control_port:
+        control = PostureControl(args.site_id, args.app_id,
+                                 {(e.site_id, e.app_id, e.entity_id) for e in entities},
+                                 start_s, entities)
+        control_srv = make_control_server(args.control_port, control)
+        threading.Thread(target=control_srv.serve_forever, name="posture-control",
+                         daemon=True).start()
+        LOG.info("posture control listening on 0.0.0.0:%d", args.control_port)
     signal.signal(signal.SIGTERM, _stop_on_sigterm)
     try:
         while True:
@@ -2204,6 +2506,8 @@ def main() -> int:
             # desired state rather than a file that changed mid-loop.
             dmap = reload_damage_map(args.damage_map)
             elapsed_s = time.monotonic() - start_s
+            if control is not None:
+                control.drain(entities, elapsed_s)
 
             # Scheduled Event Report PDUs (DIS_EVENT_SCHEDULE_PATH), once per
             # sweep -- not per entity, same cadence as the damage-map reload
