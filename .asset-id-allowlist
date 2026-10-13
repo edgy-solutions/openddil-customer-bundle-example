@@ -6,3 +6,6 @@ tools/dis-sim/dis_sim.py	tok.startswith("dis:")	source-sim: the DIS simulator pa
 tools/dis-sim/dis_sim.py	fire schedule: launcher=dis:	source-sim: the DIS simulator logs the ids it emits
 tools/dis-sim/dis_sim.py	detonate schedule: event=%d launcher=dis:	source-sim: the DIS simulator logs the ids it emits
 tools/dis-sim/dis_sim.py	fire sent event=%d launcher=dis:	source-sim: the DIS simulator logs the ids it emits
+tools/dis-sim/dis_sim.py	resupply schedule: launcher=dis:	source-sim: the DIS simulator logs the ids it emits
+tools/dis-sim/dis_sim.py	resupply sent launcher=dis:	source-sim: the DIS simulator logs the ids it emits
+tools/dis-sim/dis_sim.py	resupply send failed for launcher dis:	source-sim: the DIS simulator logs the ids it emits
