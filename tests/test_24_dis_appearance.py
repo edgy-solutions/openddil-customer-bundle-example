@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "dis-sim"
 
 from dis_sim import DAMAGE_LEVELS, Entity, appearance_bits  # noqa: E402
 
-_POWERPLANT_ON = 1 << 21
+_POWERPLANT_ON = 1 << 22
 
 
 def test_damage_occupies_bits_3_and_4():

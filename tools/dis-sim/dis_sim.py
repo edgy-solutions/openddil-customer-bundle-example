@@ -359,7 +359,7 @@ DAMAGE_LEVELS = {"none": 0, "slight": 1, "moderate": 2, "destroyed": 3}
 # share) because "removed" in particular has no bit-field encoding at all --
 # it is a second PDU type, not a value of entityAppearance.
 #   "deactivated" -- sets the appearance deactivated bit (ontology's
-#       dis_appearance.yaml:66 land / :82 air -- `deactivated: { bit: 22 }`)
+#       dis_appearance.yaml:66 land / :82 air -- `deactivated: { bit: 23 }`)
 #       IN ADDITION to whatever damage level already applies. Reversible:
 #       clearing the map entry restores the baseline, same contract as a
 #       damage level.
@@ -1224,11 +1224,9 @@ def make_control_server(port: int, control: PostureControl,
     return srv
 
 
-# Bit 15, LAND platforms only -- "launcher raised" (see
+# Bit 16, LAND platforms only -- "launcher raised" (see
 # openddil-contracts/ontology/dis_appearance.yaml, row "1_1" -> launcher).
-# This decoder's mapping, not verified against the published standard (same
-# caveat the ontology row itself carries); checking it is owed.
-_LAUNCHER_RAISED_BIT = 15
+_LAUNCHER_RAISED_BIT = 16
 
 
 def appearance_bits(domain: int,
@@ -1251,9 +1249,9 @@ def appearance_bits(domain: int,
             )
         bits |= 1 << 2
     if powerplant_on:
-        bits |= 1 << 21
-    if deactivated:
         bits |= 1 << 22
+    if deactivated:
+        bits |= 1 << 23
     if launcher_raised:
         if domain != 1:
             raise ValueError(

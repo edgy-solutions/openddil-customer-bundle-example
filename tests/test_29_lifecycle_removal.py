@@ -34,7 +34,7 @@ from dis_sim import (  # noqa: E402
     serialize,
 )
 
-_DEACTIVATED_BIT = 1 << 22
+_DEACTIVATED_BIT = 1 << 23
 
 
 def _entity() -> Entity:

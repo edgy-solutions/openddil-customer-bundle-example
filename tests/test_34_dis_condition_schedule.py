@@ -34,8 +34,8 @@ from dis_sim import (  # noqa: E402
     serialize,
 )
 
-_POWERPLANT_ON = 1 << 21
-_DEACTIVATED = 1 << 22
+_POWERPLANT_ON = 1 << 22
+_DEACTIVATED = 1 << 23
 _EXAMPLE = (Path(__file__).resolve().parents[1]
             / "tools" / "dis-sim" / "examples" / "condition-schedule.example.json")
 _PROFILE = {"emitter_name": 1001, "beams": 4, "erp_dbm": 70.0, "reduced_power_db": 15}
@@ -354,7 +354,7 @@ def test_postures_launcher_raised_survives_a_step(tmp_path):
     e.speed_mps = 0.0
     e.apply_condition_schedule(1.0)
     assert e.launcher_raised is True and e.speed_mps == 0.0
-    assert _es_bits(e) & (1 << 15)
+    assert _es_bits(e) & (1 << 16)
 
 
 def test_default_run_es_bytes_unchanged():

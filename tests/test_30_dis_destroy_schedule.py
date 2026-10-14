@@ -29,7 +29,7 @@ from dis_sim import (  # noqa: E402
     resolve_destroy_schedule,
 )
 
-_POWERPLANT_ON = 1 << 21
+_POWERPLANT_ON = 1 << 22
 
 
 def _entity(entity_id: int = 1000) -> Entity:
