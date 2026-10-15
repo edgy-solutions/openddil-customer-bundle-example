@@ -643,15 +643,18 @@ def parse_munition_type(spec: str) -> tuple[int, int, int, int, int, int, int]:
 
 def fire_pdu(entry: dict, munition_type: tuple[int, int, int, int, int, int, int],
             sim_site_id: int, sim_app_id: int, exercise_id: int,
-            protocol_version: int) -> FirePdu:
+            protocol_version: int,
+            munition_id: tuple[int, int, int] | None = None) -> FirePdu:
     """One Fire PDU (type 2, Warfare family) for one fired --fire-schedule
     entry. eventID's simulationAddress is THIS SIM's own site/app (not the
     launcher's) -- the event belongs to the exercise this sim is running,
     same convention event_report_pdu() uses for originatingEntityID's
     site/app. PURE TRANSPORT: munitionType/warhead/fuse are opaque DIS
-    codes, same discipline as the rest of this module's schedule PDUs."""
+    codes, same discipline as the rest of this module's schedule PDUs.
+    munition_id (--munition-track) names the flying munition's track id;
+    None keeps the historical 0:0:0."""
     pdu = FirePdu(
-        munitionExpendableID=EntityID(0, 0, 0),
+        munitionExpendableID=EntityID(*(munition_id or (0, 0, 0))),
         eventID=EventIdentifier(
             simulationAddress=SimulationAddress(site=sim_site_id, application=sim_app_id),
             eventNumber=entry["event"],
@@ -680,7 +683,8 @@ def fire_pdu(entry: dict, munition_type: tuple[int, int, int, int, int, int, int
 
 def detonation_pdu(entry: dict, munition_type: tuple[int, int, int, int, int, int, int],
                    sim_site_id: int, sim_app_id: int, exercise_id: int,
-                   protocol_version: int) -> DetonationPdu:
+                   protocol_version: int,
+                   munition_id: tuple[int, int, int] | None = None) -> DetonationPdu:
     """One Detonation PDU (type 3, Warfare family) for one fired
     --detonate-schedule entry. eventID carries the SAME eventNumber as its
     Fire (that is how event_urn correlates the two downstream) -- entry["event"]
@@ -709,6 +713,125 @@ def detonation_pdu(entry: dict, munition_type: tuple[int, int, int, int, int, in
     pdu.pduType = 3        # Detonation
     pdu.protocolFamily = 2  # Warfare
     pdu.pduStatus = 0
+    if munition_id is not None:
+        # The id the munition's track samples carried (--munition-track).
+        (pdu.explodingEntityID.siteID, pdu.explodingEntityID.applicationID,
+         pdu.explodingEntityID.entityID) = munition_id
+    return pdu
+
+
+# --munition-track: a fired munition that is a tracked entity in flight.
+# Without it a Fire's munitionExpendableID is 0:0:0 and nothing flies; with
+# it each --fire-schedule entry E gets a stable id (site, app, 5000 + E) that
+# the Fire, the kind-2 Entity State samples, and the Detonation all carry, so
+# a consumer can follow one missile by id. Pure functions here, so the
+# schedule and the PDUs can be tested without a socket.
+MUNITION_TRACK_ID_BASE = 5000
+MUNITION_TRACK_CLIMB_MPS = 150.0
+MUNITION_TRACK_SPEED_MPS = 250.0
+MUNITION_TRACK_BEARING_RAD = 0.0   # fixed: due north
+_MUNITION_TRACK_VEL_DT_S = 0.5
+
+
+def munition_track_id(site_id: int, app_id: int, event: int) -> tuple[int, int, int]:
+    return site_id, app_id, MUNITION_TRACK_ID_BASE + event
+
+
+def plan_munition_tracks(fire_schedule: list[dict], detonate_schedule: list[dict],
+                         site_id: int, app_id: int, rate_hz: float, flight_s: float,
+                         configured_ids: set[tuple[int, int, int]]) -> dict[int, dict]:
+    """One track per fire entry, keyed by event. Fatal (SystemExit) on a bad
+    rate/flight, an id that collides with a configured entity, or a
+    Detonation that is not after its Fire: the order is Fire, then track,
+    then Detonation, and a Detonation at or before the first sample would
+    leave no track to end."""
+    if rate_hz <= 0:
+        raise SystemExit(f"--munition-track-rate-hz: {rate_hz:g} must be > 0")
+    if flight_s <= 0:
+        raise SystemExit(f"--munition-track-flight-s: {flight_s:g} must be > 0")
+    det_by_event: dict[int, dict] = {}
+    for d in detonate_schedule:
+        if d["event"] not in det_by_event or d["t"] < det_by_event[d["event"]]["t"]:
+            det_by_event[d["event"]] = d
+    tracks: dict[int, dict] = {}
+    for f in fire_schedule:
+        mid = munition_track_id(site_id, app_id, f["event"])
+        if mid in configured_ids:
+            raise SystemExit(
+                f"--munition-track: event {f['event']} munition id "
+                f"dis:{mid[0]}:{mid[1]}:{mid[2]} collides with a configured entity")
+        det = det_by_event.get(f["event"])
+        if det is not None and det["t"] <= f["t"]:
+            raise SystemExit(
+                f"--munition-track: event {f['event']} detonation at t+{det['t']:g}s "
+                f"is not after its fire at t+{f['t']:g}s; the first track sample "
+                "is due at the fire, so the detonation would precede it")
+        tracks[f["event"]] = {
+            "event": f["event"], "id": mid, "launcher": f["launcher"],
+            "start_s": f["t"],
+            "stop_s": det["t"] if det is not None else f["t"] + flight_s,
+            "reason": "detonation" if det is not None else "flight time",
+            "rate_hz": rate_hz,
+        }
+    return tracks
+
+
+def munition_track_sample_times(track: dict) -> list[float]:
+    """Elapsed-clock times of every sample: from the Fire's time, every
+    1/rate, strictly before the stop (the Detonation, or the flight limit)."""
+    dt = 1.0 / track["rate_hz"]
+    times = []
+    k = 0
+    while track["start_s"] + k * dt < track["stop_s"]:
+        times.append(track["start_s"] + k * dt)
+        k += 1
+    return times
+
+
+def _munition_ecef(origin: tuple[float, float, float], tau_s: float
+                   ) -> tuple[float, float, float]:
+    lat, lon, alt = origin
+    dm = MUNITION_TRACK_SPEED_MPS * tau_s
+    lat += (dm * math.cos(MUNITION_TRACK_BEARING_RAD)) / 111_320.0
+    lon += (dm * math.sin(MUNITION_TRACK_BEARING_RAD)) / (111_320.0 * math.cos(math.radians(lat)))
+    return geodetic_to_ecef(lat, lon, alt + MUNITION_TRACK_CLIMB_MPS * tau_s)
+
+
+def munition_track_pdu(track: dict, origin: tuple[float, float, float], tau_s: float,
+                       munition_type: tuple[int, int, int, int, int, int, int],
+                       force_id: int, exercise_id: int,
+                       protocol_version: int) -> EntityStatePdu:
+    """One kind-2 Entity State sample, tau_s seconds into the flight from
+    origin (lat, lon, alt). Same field set as Entity.to_pdu; the velocity is
+    the finite difference of the same ECEF positions so it agrees with them."""
+    pdu = EntityStatePdu()
+    pdu.protocolVersion = protocol_version
+    pdu.exerciseID = exercise_id
+    pdu.pduType = 1        # Entity State
+    pdu.protocolFamily = 1
+    pdu.pduStatus = 0
+    pdu.entityAppearance = 0
+    pdu.capabilities = 0
+    (pdu.entityID.siteID, pdu.entityID.applicationID, pdu.entityID.entityID) = track["id"]
+    (k, d, c, cat, sub, spec, extra) = munition_type
+    pdu.entityType.entityKind = k
+    pdu.entityType.domain = d
+    pdu.entityType.country = c
+    pdu.entityType.category = cat
+    pdu.entityType.subcategory = sub
+    pdu.entityType.specific = spec
+    pdu.entityType.extra = extra
+    pdu.forceId = force_id
+    pdu.marking.characters = list(f"MSL-{track['event']}"[:11].encode("ascii").ljust(11, b"\x00"))
+    x0, y0, z0 = _munition_ecef(origin, tau_s)
+    x1, y1, z1 = _munition_ecef(origin, tau_s + _MUNITION_TRACK_VEL_DT_S)
+    pdu.entityLocation.x, pdu.entityLocation.y, pdu.entityLocation.z = x0, y0, z0
+    pdu.entityLinearVelocity.x = (x1 - x0) / _MUNITION_TRACK_VEL_DT_S
+    pdu.entityLinearVelocity.y = (y1 - y0) / _MUNITION_TRACK_VEL_DT_S
+    pdu.entityLinearVelocity.z = (z1 - z0) / _MUNITION_TRACK_VEL_DT_S
+    pdu.entityOrientation.psi = MUNITION_TRACK_BEARING_RAD
+    pdu.entityOrientation.theta = 0.0
+    pdu.entityOrientation.phi = 0.0
     return pdu
 
 
@@ -2284,6 +2407,22 @@ def main() -> int:
                         "specific.extra' for descriptor.munitionType on every "
                         "scheduled Fire/Detonation. Default is a placeholder "
                         "tuple, not a claim about any real munition.")
+    p.add_argument("--munition-track", action="store_true",
+                   default=os.getenv("DIS_MUNITION_TRACK", "").strip().lower() in ("1", "true"),
+                   help="Make each --fire-schedule munition a tracked entity "
+                        "in flight: id (site, app, 5000+event) on the Fire, on "
+                        "kind-2 Entity State samples from the Fire's time, and "
+                        "as the Detonation's explodingEntityID. Samples stop "
+                        "at the matching --detonate-schedule entry, or after "
+                        "--munition-track-flight-s with nothing further. Off "
+                        "by default: Fire carries 0:0:0 and no samples are sent.")
+    p.add_argument("--munition-track-flight-s", type=float,
+                   default=float(os.getenv("DIS_MUNITION_TRACK_FLIGHT_S", "20")),
+                   help="Seconds of --munition-track samples for a fire with "
+                        "no --detonate-schedule entry (default 20).")
+    p.add_argument("--munition-track-rate-hz", type=float,
+                   default=float(os.getenv("DIS_MUNITION_TRACK_RATE_HZ", "2")),
+                   help="--munition-track sample rate in Hz (default 2).")
     p.add_argument("--posture-schedule", default=os.getenv("DIS_POSTURE_SCHEDULE", ""),
                    help="Comma-separated ENTITY:T:ACTION: at elapsed T "
                         "seconds, apply ACTION (raise|stow|move|stop) to "
@@ -2424,6 +2563,19 @@ def main() -> int:
                  *entry["launcher"], entry["event"], entry["quantity"], entry["t"],
                  "" if entry["target"] == (0, 0, 0)
                  else f" target=dis:{entry['target'][0]}:{entry['target'][1]}:{entry['target'][2]}")
+    munition_tracks: dict[int, dict] = {}
+    if args.munition_track:
+        munition_tracks = plan_munition_tracks(
+            fire_schedule, detonate_schedule, args.site_id, args.app_id,
+            args.munition_track_rate_hz, args.munition_track_flight_s,
+            {(e.site_id, e.app_id, e.entity_id) for e in entities},
+        )
+        for tr in munition_tracks.values():
+            tr["next_k"] = 0
+            tr["sent"] = 0
+            tr["origin"] = None
+            tr["stopped"] = False
+            tr["times"] = munition_track_sample_times(tr)
     resupply_schedule = parse_resupply_schedule(
         args.resupply_schedule, args.site_id, args.app_id,
     )
@@ -2533,7 +2685,9 @@ def main() -> int:
             for idx in due_schedule_entries(fire_schedule, fire_schedule_next_due, elapsed_s):
                 entry = fire_schedule[idx]
                 pdu = fire_pdu(entry, munition_type, args.site_id, args.app_id,
-                               args.exercise_id, args.protocol_version)
+                               args.exercise_id, args.protocol_version,
+                               munition_id=(munition_tracks[entry["event"]]["id"]
+                                            if entry["event"] in munition_tracks else None))
                 try:
                     send_pdu(sock, serialize(pdu), args.host, args.port, targets)
                     sent += 1
@@ -2543,11 +2697,47 @@ def main() -> int:
                     errors += 1
                     LOG.warning("fire send failed for event %d: %s", entry["event"], exc)
 
+            # --munition-track samples: after the Fire above, before the
+            # Detonation below, so a consumer sees them in that order. Only
+            # a track whose Fire has gone out (next_due is None) flies.
+            for idx, fentry in enumerate(fire_schedule):
+                tr = munition_tracks.get(fentry["event"])
+                if tr is None or tr["stopped"] or fire_schedule_next_due[idx] is not None:
+                    continue
+                while tr["next_k"] < len(tr["times"]) and tr["times"][tr["next_k"]] <= elapsed_s:
+                    if tr["origin"] is None:
+                        src = entities_by_id.get(tr["launcher"][2]) \
+                            if tr["launcher"][:2] == (args.site_id, args.app_id) else None
+                        src = src or entities[0]
+                        tr["origin"] = (src.lat, src.lon, src.alt)
+                        tr["force_id"] = src.force_id
+                        LOG.info("munition track start event=%d id=dis:%d:%d:%d",
+                                 tr["event"], *tr["id"])
+                    t_k = tr["times"][tr["next_k"]]
+                    pdu = munition_track_pdu(tr, tr["origin"], t_k - tr["start_s"],
+                                             munition_type, tr["force_id"],
+                                             args.exercise_id, args.protocol_version)
+                    tr["next_k"] += 1
+                    try:
+                        send_pdu(sock, serialize(pdu), args.host, args.port, targets)
+                        sent += 1
+                        tr["sent"] += 1
+                    except OSError as exc:
+                        errors += 1
+                        LOG.warning("munition track send failed for event %d: %s",
+                                    tr["event"], exc)
+                if tr["next_k"] >= len(tr["times"]) and elapsed_s >= tr["stop_s"]:
+                    tr["stopped"] = True
+                    LOG.info("munition track stop event=%d id=dis:%d:%d:%d reason=%s samples=%d",
+                             tr["event"], *tr["id"], tr["reason"], tr["sent"])
+
             # Scheduled Detonation PDUs (--detonate-schedule), same cadence.
             for idx in due_schedule_entries(detonate_schedule, detonate_schedule_next_due, elapsed_s):
                 entry = detonate_schedule[idx]
                 pdu = detonation_pdu(entry, munition_type, args.site_id, args.app_id,
-                                     args.exercise_id, args.protocol_version)
+                                     args.exercise_id, args.protocol_version,
+                                     munition_id=(munition_tracks[entry["event"]]["id"]
+                                                  if entry["event"] in munition_tracks else None))
                 try:
                     send_pdu(sock, serialize(pdu), args.host, args.port, targets)
                     sent += 1
