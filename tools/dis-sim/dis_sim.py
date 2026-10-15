@@ -2711,7 +2711,7 @@ def main() -> int:
                         src = src or entities[0]
                         tr["origin"] = (src.lat, src.lon, src.alt)
                         tr["force_id"] = src.force_id
-                        LOG.info("munition track start event=%d id=dis:%d:%d:%d",
+                        LOG.info("munition track start event=%d entity %d:%d:%d",
                                  tr["event"], *tr["id"])
                     t_k = tr["times"][tr["next_k"]]
                     pdu = munition_track_pdu(tr, tr["origin"], t_k - tr["start_s"],
@@ -2728,7 +2728,7 @@ def main() -> int:
                                     tr["event"], exc)
                 if tr["next_k"] >= len(tr["times"]) and elapsed_s >= tr["stop_s"]:
                     tr["stopped"] = True
-                    LOG.info("munition track stop event=%d id=dis:%d:%d:%d reason=%s samples=%d",
+                    LOG.info("munition track stop event=%d entity %d:%d:%d reason=%s samples=%d",
                              tr["event"], *tr["id"], tr["reason"], tr["sent"])
 
             # Scheduled Detonation PDUs (--detonate-schedule), same cadence.
