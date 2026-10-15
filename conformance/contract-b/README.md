@@ -13,7 +13,7 @@ live in the integrator's private overlay.
 |---|---|
 | `validate.py` | The validator. Stdlib Python ≥ 3.10, no installs. Reads JSONL or `rpk topic consume` output. |
 | `selftest.sh` | Proves the validator can fail: every rule has a red case, and an empty input exits 2. |
-| `fixtures/replay/` | Synthetic Contract B records: 6 assets plus parts stock, three planes, two replays total. |
+| `fixtures/replay/` | Synthetic Contract B records: 6 assets plus parts stock and fielding due dates, four planes, two replays total. |
 | `fixtures/refused/` | One file per rule, each violating exactly that rule. |
 | `fixtures/nations.txt` | The fixture's nation set, for `--nations`. |
 
@@ -22,7 +22,8 @@ live in the integrator's private overlay.
 Records go on the element planes:
 - `asset-element-telemetry`, one record per asset per observation, key `asset_id`;
 - `asset-element-inventory`, one per asset per layer, key `asset_id:layer_name`;
-- `parts-availability`, one per site per part, key `site:part_ref`.
+- `parts-availability`, one per site per part, key `site:part_ref`;
+- `asset-fielding`, one per serialized item, key `serial`.
 
 Each record is the existing element-plane envelope plus:
 
@@ -46,6 +47,19 @@ Each record is the existing element-plane envelope plus:
 | `on_hand`, `lead_time_days` | Stock at this site. `lead_time_days` is **absent** when the source cannot estimate it — never `null` and never `0` (`stock_invalid`). |
 | `source` | Who published this row (`source_absent`). |
 | `nearest_site_with_stock`, `nearest_on_hand` | The source's own nearest-first answer, published on its own records: a site name with a count ≥ 1, or `null` with no count when no site in its search order has stock (`nearest_invalid`). |
+
+### The fielding plane
+
+`asset-fielding` carries the due date of a serialized item at a unit, as the logistics system of record holds it. It is keyed
+by `serial`: there is no `asset_id` or `sustainment_id` on these records, and the three asset-identifier rules do not apply
+to this plane. Labels sit under `provenance`, as on every plane.
+
+| Block | Rule it answers to |
+|---|---|
+| `serial` | The item identity, a non-empty string and never `none` (`serial_invalid`). |
+| `platform_variant`, `unit` | Non-empty strings (`fielding_invalid`). |
+| `site` | The edge site the unit is fielded to (`site_absent`). |
+| `due_by_ns` | An integer ns timestamp after 2000-01-01. It has no upper bound: a due date is legitimately in the future (`due_by_invalid`). |
 
 Run `python3 validate.py --list-rules` for the full rule set.
 
@@ -82,6 +96,10 @@ Parts stock is a separate topic, consumed and validated the same way:
 ```sh
 rpk topic consume parts-availability -o start -n <N> \
   | python3 validate.py --nations <your-nations.txt>
+```
+Fielding due dates are a separate topic, consumed and validated the same way:
+```sh
+rpk topic consume asset-fielding -o start -n <N>   | python3 validate.py --nations <your-nations.txt>
 ```
 - `--readiness required` is the default.
 - The output is counts only.

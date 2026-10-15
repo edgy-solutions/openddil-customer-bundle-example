@@ -6,8 +6,9 @@ telemetry/inventory envelopes (see openddil-logistics-sim's publisher and
 openddil-projector's handlers) plus four additive blocks — sustainment_id,
 provenance (labels), extraction, extras — and operational.readiness. A third
 plane, "parts" (per-site spare-part stock on `parts-availability`, keyed by
-site + part rather than by asset), carries its own rules in place of the
-asset-identifier ones.
+site + part rather than by asset), and a fourth, "fielding" (the due date of a
+serialized item at a unit, on `asset-fielding`, keyed by serial), carry their own
+rules in place of the asset-identifier ones.
 
 This validates RECORDS, not a mock of them: every rule below has a minimal
 fixture under fixtures/refused/ that fails only that rule (see selftest.sh),
@@ -67,6 +68,10 @@ PLANE_FIELDS = {
         "nearest_site_with_stock", "nearest_on_hand", "observed_at_ns",
         "provenance", "extraction", "extras",
     },
+    "fielding": {
+        "serial", "platform_variant", "unit", "site", "due_by_ns",
+        "observed_at_ns", "provenance", "extraction", "extras",
+    },
 }
 
 LOWER_BOUND_NS = 946684800_000000000  # 2000-01-01T00:00:00Z
@@ -92,9 +97,10 @@ TELEMETRY_RULES = [
 ]
 INVENTORY_RULES = ["counts_invalid"]
 PARTS_RULES = ["part_invalid", "stock_invalid", "source_absent", "nearest_invalid"]
+FIELDING_RULES = ["serial_invalid", "fielding_invalid", "due_by_invalid"]
 STREAM_RULES = ["conflicting_duplicate", "order_regression"]
 
-ALL_RULES = GENERIC_RULES + TELEMETRY_RULES + INVENTORY_RULES + PARTS_RULES + STREAM_RULES
+ALL_RULES = GENERIC_RULES + TELEMETRY_RULES + INVENTORY_RULES + PARTS_RULES + FIELDING_RULES + STREAM_RULES
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +185,8 @@ def resolve_plane(topic, record, plane_arg):
             return "inventory"
         if "parts-availability" in topic:
             return "parts"
+        if "asset-fielding" in topic:
+            return "fielding"
     if plane_arg:
         return plane_arg
     if isinstance(record, dict):
@@ -188,6 +196,8 @@ def resolve_plane(topic, record, plane_arg):
             return "inventory"
         if "part_ref" in record:
             return "parts"
+        if "due_by_ns" in record:
+            return "fielding"
     return None
 
 
@@ -207,6 +217,11 @@ def expected_key(plane, record):
         part_ref = record.get("part_ref")
         if isinstance(site, str) and site != "" and isinstance(part_ref, str) and part_ref != "":
             return f"{site}:{part_ref}"
+        return None
+    if plane == "fielding":
+        serial = record.get("serial")
+        if isinstance(serial, str) and serial != "":
+            return serial
         return None
     return None
 
@@ -469,6 +484,22 @@ def check_parts(record, out):
             out.add("nearest_invalid")
 
 
+def check_fielding(record, out):
+    # The fielding plane is keyed by serial: there is no asset_id or
+    # sustainment_id here, opaque or otherwise. A due date is legitimately
+    # in the future, so due_by_ns has a lower bound only.
+    serial = record.get("serial")
+    if not is_nonempty_str(serial) or serial.strip() in ("none", "None", "NONE"):
+        out.add("serial_invalid")
+
+    if not is_nonempty_str(record.get("platform_variant")) or not is_nonempty_str(record.get("unit")):
+        out.add("fielding_invalid")
+
+    due = record.get("due_by_ns")
+    if not is_int_not_bool(due) or due < LOWER_BOUND_NS:
+        out.add("due_by_invalid")
+
+
 # ---------------------------------------------------------------------------
 # Per-record validation. Returns the set of failing rule ids plus data for
 # summary tallies / stream tracking.
@@ -499,10 +530,10 @@ def validate_record(raw, plane_arg, readiness_mode, nations, now_ns):
 
     aid = record.get("asset_id")
     info["asset_id"] = aid if isinstance(aid, str) else None
-    # The parts plane is keyed by site + part; it carries no asset_id or
-    # sustainment_id, opaque or otherwise, so none of the three
-    # asset-identifier rules apply to it.
-    if plane != "parts":
+    # The parts plane is keyed by site + part and the fielding plane by
+    # serial; neither carries an asset_id or sustainment_id, opaque or
+    # otherwise, so none of the three asset-identifier rules apply.
+    if plane not in ("parts", "fielding"):
         if not asset_id_ok(aid):
             fails.add("asset_id_invalid")
 
@@ -553,6 +584,8 @@ def validate_record(raw, plane_arg, readiness_mode, nations, now_ns):
         check_counts(record, fails)
     elif plane == "parts":
         check_parts(record, fails)
+    elif plane == "fielding":
+        check_fielding(record, fails)
 
     return fails, record, info
 
@@ -560,7 +593,7 @@ def validate_record(raw, plane_arg, readiness_mode, nations, now_ns):
 def main(argv):
     p = argparse.ArgumentParser(prog="validate.py", add_help=True)
     p.add_argument("files", nargs="*", default=["-"], metavar="FILE")
-    p.add_argument("--plane", choices=["telemetry", "inventory", "parts"])
+    p.add_argument("--plane", choices=["telemetry", "inventory", "parts", "fielding"])
     p.add_argument("--readiness", choices=["required", "optional"], default="required")
     p.add_argument("--nations")
     p.add_argument("--now-ns", type=int)
@@ -624,7 +657,7 @@ def main(argv):
 
     rule_counts = {r: 0 for r in ALL_RULES}
     accepted = refused = replayed = 0
-    plane_counts = {"telemetry": 0, "inventory": 0, "parts": 0}
+    plane_counts = {"telemetry": 0, "inventory": 0, "parts": 0, "fielding": 0}
     assets = set()
     originators = set()
     labelled = 0
@@ -654,7 +687,7 @@ def main(argv):
             readiness_counts[status] += 1
 
         is_replay = False
-        if isinstance(record, dict) and info["plane"] in ("telemetry", "inventory", "parts"):
+        if isinstance(record, dict) and info["plane"] in ("telemetry", "inventory", "parts", "fielding"):
             exp = expected_key(info["plane"], record)
             obs = record.get("observed_at_ns")
             if exp is not None and is_int_not_bool(obs):
@@ -729,7 +762,7 @@ def emit(result, as_json):
         f"refused={result['refused']} replayed={result['replayed']} "
         f"assets={result['assets']} "
         f"planes=telemetry:{planes.get('telemetry', 0)},inventory:{planes.get('inventory', 0)},"
-        f"parts:{planes.get('parts', 0)} "
+        f"parts:{planes.get('parts', 0)},fielding:{planes.get('fielding', 0)} "
         f"keys_checked={result['keys_checked']}"
     )
     print("refused by rule:")

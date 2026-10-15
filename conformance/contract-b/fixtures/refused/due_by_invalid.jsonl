@@ -1,0 +1,1 @@
+{"topic": "asset-fielding", "key": "SN-2001", "value": {"serial": "SN-2001", "platform_variant": "VARIANT_X", "unit": "unit-a", "site": "edge-01", "due_by_ns": "2026-10-22T00:00:00Z", "observed_at_ns": 1790003600000000000, "provenance": {"originator_nation": "ATL", "releasable_to": []}, "extraction": {"cursor": "ex-cursor-fl001", "extracted_at_ns": 1790003690000000000}}}
