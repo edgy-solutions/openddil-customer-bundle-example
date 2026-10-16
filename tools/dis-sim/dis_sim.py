@@ -1385,11 +1385,25 @@ def appearance_bits(domain: int,
     return bits
 
 
+def placement_error(spread_deg: float, leash_deg: float) -> str | None:
+    """Message for a bad placement (--spread-deg/--leash-deg), else None."""
+    if spread_deg < 0:
+        return f"--spread-deg: {spread_deg:g} must be >= 0"
+    if leash_deg < 0:
+        return f"--leash-deg: {leash_deg:g} must be >= 0"
+    if leash_deg > 0 and leash_deg < spread_deg:
+        return (f"--leash-deg: {leash_deg:g} must be >= --spread-deg "
+                f"{spread_deg:g} (or 0 for no leash)")
+    return None
+
+
 class Entity:
     """One emitting entity. Drifts slowly so positions are not static."""
 
     def __init__(self, index: int, site_id: int, app_id: int, rng: random.Random,
-                 entity_id: int | None = None):
+                 entity_id: int | None = None,
+                 base_lat: float = BASE_LAT_DEG, base_lon: float = BASE_LON_DEG,
+                 spread_deg: float = SPREAD_DEG, leash_deg: float = 0.0):
         self.site_id = site_id
         self.app_id = app_id
         # `1000 + index` is the default and stays the default: the contiguous
@@ -1412,8 +1426,14 @@ class Entity:
         # DIS marking is 11 bytes + a charset byte; keep it short and ASCII.
         self.marking = f"{stem[:7]}-{slot % 100:02d}"[:11]
 
-        self.lat = BASE_LAT_DEG + rng.uniform(-SPREAD_DEG, SPREAD_DEG)
-        self.lon = BASE_LON_DEG + rng.uniform(-SPREAD_DEG, SPREAD_DEG)
+        # Placement area: seed around (base_lat, base_lon); leash_deg > 0 keeps
+        # the entity within base +/- leash_deg (see step). 0 = no leash.
+        self.base_lat = base_lat
+        self.base_lon = base_lon
+        self.spread_deg = spread_deg
+        self.leash_deg = leash_deg
+        self.lat = base_lat + rng.uniform(-spread_deg, spread_deg)
+        self.lon = base_lon + rng.uniform(-spread_deg, spread_deg)
         self.alt = 1600.0 + rng.uniform(0, 200)
         self.heading = rng.uniform(0, 2 * math.pi)
         # Air domain (2) moves faster than land (1).
@@ -1690,6 +1710,15 @@ class Entity:
         # comes ONLY from its schedule" (--posture-schedule's help).
         if not self.has_posture_schedule:
             self.heading += random.uniform(-0.05, 0.05)
+            # Leash: past the placement box on either axis, point back at the
+            # base. Deterministic -- no random draws -- and never applied to a
+            # posture-scheduled entity (its motion comes only from its schedule).
+            if self.leash_deg > 0 and (
+                    abs(self.lat - self.base_lat) > self.leash_deg
+                    or abs(self.lon - self.base_lon) > self.leash_deg):
+                dlat = self.base_lat - self.lat
+                dlon = (self.base_lon - self.lon) * math.cos(math.radians(self.lat))
+                self.heading = math.atan2(dlon, dlat)
 
     def to_pdu(self, exercise_id: int, protocol_version: int) -> EntityStatePdu:
         pdu = EntityStatePdu()
@@ -2343,6 +2372,21 @@ def main() -> int:
     p.add_argument("--site-id", type=int, default=int(os.getenv("DIS_SITE_ID", "1")))
     p.add_argument("--app-id", type=int, default=int(os.getenv("DIS_APP_ID", "1")))
     p.add_argument("--seed", type=int, default=int(os.getenv("DIS_SEED", "1337")))
+    p.add_argument("--base-lat", type=float,
+                   default=float(os.getenv("DIS_BASE_LAT_DEG", str(BASE_LAT_DEG))),
+                   help="Centre latitude (deg) entities are seeded around.")
+    p.add_argument("--base-lon", type=float,
+                   default=float(os.getenv("DIS_BASE_LON_DEG", str(BASE_LON_DEG))),
+                   help="Centre longitude (deg) entities are seeded around.")
+    p.add_argument("--spread-deg", type=float,
+                   default=float(os.getenv("DIS_SPREAD_DEG", str(SPREAD_DEG))),
+                   help="Seed each entity within base +/- this many degrees "
+                        "(must be >= 0).")
+    p.add_argument("--leash-deg", type=float,
+                   default=float(os.getenv("DIS_LEASH_DEG", "0.0")),
+                   help="Keep entities within base +/- this many degrees by "
+                        "turning them back toward the base. 0 = no leash (the "
+                        "default); otherwise must be >= --spread-deg.")
     p.add_argument("--damage", default=os.getenv("DIS_DAMAGE", ""),
                    help="Emit entity appearance with this damage level "
                         "(none|slight|moderate|destroyed). Omitted = the field "
@@ -2470,6 +2514,9 @@ def main() -> int:
     p.add_argument("--list-types", action="store_true",
                    help="print the recognised entity types and exit")
     args = p.parse_args()
+    _placement_err = placement_error(args.spread_deg, args.leash_deg)
+    if _placement_err:
+        p.error(_placement_err)
 
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -2491,6 +2538,12 @@ def main() -> int:
         return 0
 
     rng = random.Random(args.seed)
+    print(f"dis-sim: placement base ({args.base_lat:g}, {args.base_lon:g}) "
+          f"spread {args.spread_deg:g} deg, "
+          + (f"leash {args.leash_deg:g} deg" if args.leash_deg > 0 else "leash off"),
+          flush=True)
+    placement = dict(base_lat=args.base_lat, base_lon=args.base_lon,
+                     spread_deg=args.spread_deg, leash_deg=args.leash_deg)
     explicit_ids: list[int] = []
     for tok in (t.strip() for t in args.entity_ids.split(",")):
         if not tok:
@@ -2501,10 +2554,11 @@ def main() -> int:
     if explicit_ids:
         print(f"dis-sim: emitting {len(explicit_ids)} explicit entity id(s): "
               f"{explicit_ids} (--entities ignored)", flush=True)
-        entities = [Entity(i, args.site_id, args.app_id, rng, entity_id=eid)
+        entities = [Entity(i, args.site_id, args.app_id, rng, entity_id=eid, **placement)
                     for i, eid in enumerate(explicit_ids)]
     else:
-        entities = [Entity(i, args.site_id, args.app_id, rng) for i in range(args.entities)]
+        entities = [Entity(i, args.site_id, args.app_id, rng, **placement)
+                    for i in range(args.entities)]
 
     # Apply the damage profile, if the operator asked for one. Without
     # --damage nothing changes and appearance stays 0 -- silence, not health.
