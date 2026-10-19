@@ -168,6 +168,41 @@ classes:
       It lands when a sample-deployment service actually needs packaging.
       Until then this row says "known, not forgotten".
 
+  - id: terrain
+    purpose: >
+      Packaged map terrain for the HQ and regional 3D maps: elevation tiles,
+      optional open imagery, and an OpenStreetMap water layer for the
+      regional coastline. The OSS core ships the mechanism (basemap provider,
+      no network by default); the overlay ships the data for its own area.
+    path: deployment-overlay/terrain/
+    required: false
+    status: MISSING
+    travels_with: ui-refresh
+    notes: >
+      Served by the frontend nginx at /deployment-overlay/terrain/, gated like
+      the rest of the overlay. Layout, written by openddil-demo
+      frontend/scripts/pack-terrain.mjs:
+
+        terrain/<hash>/dem/{z}/{x}/{y}.png            Terrarium elevation
+        terrain/<hash>/imagery/{z}/{x}/{y}.jpg        optional base imagery
+        terrain/<hash>/patch-imagery/{z}/{x}/{y}.jpg  optional close-ups
+        terrain/<hash>/water.json                     OSM water, AOI-clipped
+
+      <hash> is a content hash, so nginx serves the directory as immutable
+      for a year; a new bundle gets a new hash. The tool writes the hashed
+      URLs into the overlay's deployment.json `terrain` block, and that file
+      stays no-cache, which is how a new bundle takes effect.
+
+      Every source carries its licence and credit line (`terrain.credits`),
+      and only redistributable data goes here: open elevation, Natural Earth,
+      OSM (ODbL), open imagery. A licensed imagery source is configured by
+      the deployment (`basemap: licensed`), never packaged into a bundle that
+      lacks the licence.
+
+      The twin, when it lands, packages a small fictional area with
+      synthetic elevation, never the real deployment's area: terrain is
+      location, and location is what a real overlay keeps private.
+
   - id: deployment-manifests
     purpose: >
       Cluster manifests and per-site deployment configuration (site topology,
