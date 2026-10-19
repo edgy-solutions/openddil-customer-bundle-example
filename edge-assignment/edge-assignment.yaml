@@ -1,0 +1,33 @@
+# The site table for the example deployment: where every FOB, region and HQ
+# sits, and how assets are assigned to edges. Fictional places in the
+# synthetic twin area (deployment-overlay/terrain). Schema: README.md here.
+#
+# One file, every reader: asset-registry and the projectors read the
+# assignment keys; every map (hub and tier frontends) reads the site rows.
+
+# FOB rows: one per edge. edge_id is the edge tier's id, region_id its region's.
+fobs:
+  - {edge_id: edge-01, region_id: region-east, lat: 39.08, lon: -104.92, label: FOB Granite}
+  - {edge_id: edge-02, region_id: region-east, lat: 38.96, lon: -104.80, label: FOB Juniper}
+  - {edge_id: edge-03, region_id: region-west, lat: 38.92, lon: -105.18, label: FOB Mesa}
+
+# Tier site rows: where a region or HQ sits. Optional; a region without one is
+# drawn at the centre of its FOBs.
+tier_sites:
+  - {tier_id: region-east, lat: 39.02, lon: -104.86, label: Cedar Ridge}
+  - {tier_id: region-west, lat: 38.95, lon: -105.12, label: Pinyon Flat}
+  - {tier_id: hq, lat: 39.12, lon: -105.05, label: HQ Summit}
+
+# Assignment. An empty chain assigns nothing by position: every asset takes the
+# fallback, exactly as with no file at all, and the FOB rows above are declared
+# for the maps only. To assign by position, move the FOB rows into a
+# nearest_fob step:
+#   chain:
+#     - strategy: nearest_fob
+#       fobs: [...]
+# (and delete the top-level `fobs:`; the rows live in one place).
+strategy: chain
+chain: []
+fallback:
+  edge_id: edge-unspecified
+  region_id: region-unspecified
