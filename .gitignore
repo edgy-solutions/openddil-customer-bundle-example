@@ -50,3 +50,9 @@ Thumbs.db
 .mcp.json
 .claude/
 tests/bloblang/.bin/
+
+# Terrain tiles are build output: tools/terrain-twin regenerates them byte for
+# byte (content-hashed directory), so only the generator and water.json are kept.
+deployment-overlay/terrain/*/dem/
+deployment-overlay/terrain/*/imagery/
+deployment-overlay/terrain/*/patch-imagery/

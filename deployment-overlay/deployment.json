@@ -1,0 +1,10 @@
+{
+  "terrain": {
+    "elevationUrl": "/deployment-overlay/terrain/103ba1d3b58f44ea/dem/{z}/{x}/{y}.png",
+    "waterUrl": "/deployment-overlay/terrain/103ba1d3b58f44ea/water.json",
+    "credits": {
+      "elevation": "Elevation: synthetic (example twin, not a real place)",
+      "water": "Water: synthetic (example twin)"
+    }
+  }
+}
