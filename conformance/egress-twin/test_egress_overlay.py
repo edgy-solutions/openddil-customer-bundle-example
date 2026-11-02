@@ -22,7 +22,7 @@ from urllib.parse import urlsplit
 import pytest
 import yaml
 
-BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[1]
+BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
 TIER_VALUES = BUNDLE_ROOT / "k8s" / "tier-node-values.yaml"
 VALUES = BUNDLE_ROOT / "k8s" / "egress-values.yaml"
 SAMPLE_NATIONS = {"ATL", "BDR", "SYL"}

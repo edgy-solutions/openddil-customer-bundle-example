@@ -9,7 +9,7 @@
 #
 # WHY THIS IS A TEST FIXTURE, NOT DOCUMENTATION:
 #
-# tests/test_egress_overlay.py renders the chart with these values and loads
+# conformance/egress-twin/test_egress_overlay.py renders the chart with these values and loads
 # every section through the egress service's own config loaders, so a shape the
 # service would refuse fails here. It renders and loads. It does not deliver:
 # every host below is under .invalid, so a live install reaches nothing until a

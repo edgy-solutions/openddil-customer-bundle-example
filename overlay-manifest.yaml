@@ -249,8 +249,8 @@ classes:
       shape and does NOT attest that any real-world destination, schema or route
       was validated.
 
-      tests/test_egress_overlay.py loads the rendered config through the egress
-      service's own loaders, because the chart passes it through unread and a
+      conformance/egress-twin/test_egress_overlay.py loads the rendered config
+      through the egress service's own loaders, because the chart passes it through unread and a
       clean render alone would not catch a kind the service refuses. Hosts are
       under .invalid, so it renders and loads and delivers nothing.
 
