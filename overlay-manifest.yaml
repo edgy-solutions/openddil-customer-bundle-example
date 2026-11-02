@@ -234,6 +234,26 @@ classes:
     required: false
     status: present
 
+  - id: egress-overlay
+    purpose: >
+      A deployment's egress declarations: the kinds it sends, the destinations
+      it may send them to, the routes between them, and the assembler, intake
+      and forwarder entries that carry them. Secrets and trust stores are named
+      here and created out of band.
+    path: k8s/egress-values.yaml
+    required: false
+    status: present
+    notes: >
+      Layered on the tier-node values, so that file's renders do not change.
+      Authored for the sample deployment; definitive for it. Demonstrates the
+      shape and does NOT attest that any real-world destination, schema or route
+      was validated.
+
+      tests/test_egress_overlay.py loads the rendered config through the egress
+      service's own loaders, because the chart passes it through unread and a
+      clean render alone would not catch a kind the service refuses. Hosts are
+      under .invalid, so it renders and loads and delivers nothing.
+
   - id: mapping-unit-tests
     purpose: >
       Bloblang-level unit tests for the ingress mappings, distinct from

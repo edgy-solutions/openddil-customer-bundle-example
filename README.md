@@ -44,6 +44,9 @@ openddil-customer-bundle-example/
 ├── ontology/
 │   ├── asset_identity_aliases.yaml          ← dis: + sim_a: placeholder aliases
 │   └── platform_variant_aliases.yaml        ← sim_a: placeholder variants
+├── k8s/
+│   ├── tier-node-values.yaml                ← tier presentation node values
+│   └── egress-values.yaml                   ← kinds, destinations, routes
 ├── schemas/
 │   └── (empty — real customer schemas live in private bundles)
 └── tests/

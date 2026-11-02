@@ -40,6 +40,9 @@ bundle outside the `openddil/` workspace.
   `ontology/platform_variant_aliases.yaml` — placeholder dis+sim_a
   aliases. Layer over the OSS base via bind-mount in the Connect
   containers.
+- `k8s/egress-values.yaml` — sample egress kinds, destinations, routes and
+  their assembler, intake and forwarder entries, layered on
+  `k8s/tier-node-values.yaml`. Fictional; renders and loads, delivers nothing.
 - `tests/_example_helpers.py` — re-exports OSS generic helpers
   (`_cm_helpers`) AND provides sim-a/egress test plumbing. Private
   bundles cross-import this to inherit one import root.
