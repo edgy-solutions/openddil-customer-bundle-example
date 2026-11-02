@@ -20,6 +20,12 @@
 #     -f k8s/tier-node-values.yaml -f k8s/egress-values.yaml
 # =============================================================================
 
+# Names this deployment in the documents generated from it. The chart does not
+# read it, so no render changes. Without `attribution`, each document carries the
+# default attribution line; `attribution: false` drops the line.
+system:
+  name: "Sample Fleet System"
+
 releasability:
   enabled: true
   destinations:

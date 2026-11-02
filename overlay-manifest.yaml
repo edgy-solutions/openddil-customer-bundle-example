@@ -234,6 +234,19 @@ classes:
     required: false
     status: present
 
+  - id: system-presentation
+    purpose: >
+      How a deployment names itself in the documents generated from it:
+      `system.name` and `system.attribution`. These are presentation values only.
+      Kind names, annotation keys, event types and topic roles are the contract,
+      and every deployment keeps them as they are.
+    path: k8s/egress-values.yaml
+    required: false
+    status: present
+    notes: >
+      The sample name is fiction. The chart does not read these values, so they
+      change no render.
+
   - id: egress-overlay
     purpose: >
       A deployment's egress declarations: the kinds it sends, the destinations
