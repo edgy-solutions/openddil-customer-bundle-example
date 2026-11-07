@@ -3,7 +3,7 @@
 Asset ids key every downstream store, so an id's platform must not depend on
 where a type sits in the type list. These tests hold the lab map to the
 platforms the two lab edges already report, and check that the list's order
-has no effect.
+has no effect. The map also pins the undeclared fixture.
 """
 from __future__ import annotations
 
@@ -38,18 +38,27 @@ DEPLOYED = {
     "dis:2:1:1005": "AH-64E-V6",
 }
 
+# Pinned but deliberately undeclared; see the fixture comment in dis_sim.py.
+UNDECLARED_FIXTURE = {"dis:1:1:1099": "HMMWV-M1151A1"}
+
 
 def test_map_covers_exactly_the_lab_edges():
-    assert set(DEFAULT_ENTITY_PLATFORMS) == set(DEPLOYED)
+    assert set(DEFAULT_ENTITY_PLATFORMS) == set(DEPLOYED) | set(UNDECLARED_FIXTURE)
 
 
 def test_only_the_rcv_m_ids_change_platform():
     changed = {k: (DEPLOYED[k], v) for k, v in DEFAULT_ENTITY_PLATFORMS.items()
-               if DEPLOYED[k] != v}
+               if k in DEPLOYED and DEPLOYED[k] != v}
     assert changed == {
         "dis:1:1:1004": ("RCV-M", "AH-64E-V6"),
         "dis:2:1:1004": ("RCV-M", "AH-64E-V6"),
     }
+
+
+def test_the_undeclared_fixture_is_pinned():
+    for k, v in UNDECLARED_FIXTURE.items():
+        assert DEFAULT_ENTITY_PLATFORMS[k] == v
+        assert k not in DEPLOYED
 
 
 def test_every_pinned_variant_resolves():
