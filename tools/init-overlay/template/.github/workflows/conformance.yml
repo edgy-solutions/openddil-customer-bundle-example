@@ -1,0 +1,87 @@
+name: Conformance
+
+# Runs checks.sh, the ten overlay checks, on every push and pull request.
+# The sibling checkouts are pinned to the SHAs init-overlay wrote from the example's
+# tools/init-overlay/pins.env. Move a pin on purpose, in a commit that says why.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    env:
+      OPENDDIL_REPOS: ${{ github.workspace }}/repos
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: edgy-solutions/openddil-customer-bundle-example
+          ref: @BUNDLE_SHA@
+          path: repos/openddil-customer-bundle-example
+
+      - uses: actions/checkout@v4
+        with:
+          repository: edgy-solutions/openddil-helm
+          ref: @HELM_REF@
+          path: repos/openddil-helm
+
+      - uses: actions/checkout@v4
+        with:
+          repository: edgy-solutions/openddil-demo
+          ref: @DEMO_REF@
+          path: repos/openddil-demo
+
+      - uses: actions/checkout@v4
+        with:
+          repository: edgy-solutions/openddil-contracts
+          ref: @CONTRACTS_REF@
+          path: repos/openddil-contracts
+
+      - uses: actions/checkout@v4
+        with:
+          repository: edgy-solutions/openddil-tactical-agents
+          ref: @TA_REF@
+          path: repos/openddil-tactical-agents
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.3
+
+      - name: Install
+        run: |
+          sudo apt-get update && sudo apt-get install -y libsnappy-dev
+          pip install pytest pyyaml jsonschema asyncpg confluent-kafka grpcio-tools \
+            "faust-streaming>=0.10.0" "aiokafka<0.12.0" python-snappy watchdog pint==0.24.4 \
+            "protobuf>=6.30.0,<7.0.0"
+
+      # gen/ is gitignored in openddil-contracts, so the checkout supplies only proto/.
+      # Generate after the install, pinned to the installed protobuf runtime, as
+      # openddil-tactical-agents' tests.yml does, and prove one module imports.
+      - name: Generate the contracts' protobuf bindings
+        run: |
+          PB=$(python -c "import google.protobuf as p; print(p.__version__)")
+          pip install "grpcio-tools" "protobuf==$PB"
+          cd repos/openddil-contracts
+          make python PROTOC="python -m grpc_tools.protoc"
+          echo "generated $(find gen/python -name '*_pb2.py' | wc -l) protobuf modules"
+          PYTHONPATH=gen/python python -c "from openddil.telemetry.v1 import telemetry_pb2; from openddil.common.v1 import ucum"
+
+      - name: Run the checks
+        run: |
+          set -o pipefail
+          bash checks.sh | tee checks.out
+          line="$(tail -n 1 checks.out)"
+          if [ "$line" != "overlay-checks: ran=10 pass=10 fail=0" ]; then
+            echo "::error::checks summary was: $line" >&2
+            exit 1
+          fi
