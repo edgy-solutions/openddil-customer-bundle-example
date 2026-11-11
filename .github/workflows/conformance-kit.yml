@@ -1,0 +1,99 @@
+name: Conformance kit
+
+# Runs the overlay checkers and the egress twin against this repository's own overlay.
+#
+# The twin loads the sample egress values in the egress service's own config loaders
+# and renders them with the chart, so it needs the public openddil-helm and
+# openddil-demo checkouts and `helm`. It skips a test whose prerequisite is missing,
+# and a run that skipped tests proved less than it says. So this job fails on any
+# skipped test, and on a run that passed fewer tests than the floor below.
+#
+# The sibling checkouts are pinned to commit SHAs, not branches, so a change in a
+# sibling cannot turn this job red or green on its own. Each pin is the head of the
+# repository's default branch (master for helm and demo, main for contracts) as of
+# 2026-11-10. Move a pin on purpose, in a commit that says why.
+
+on:
+  push:
+    branches: [ "master" ]
+    paths:
+      - "conformance/**"
+      - "k8s/**"
+      - "overlay-manifest.yaml"
+      - "tests/test_overlay_manifest_parity.py"
+      - ".github/workflows/conformance-kit.yml"
+  pull_request:
+    branches: [ "master" ]
+    paths:
+      - "conformance/**"
+      - "k8s/**"
+      - "overlay-manifest.yaml"
+      - "tests/test_overlay_manifest_parity.py"
+      - ".github/workflows/conformance-kit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    env:
+      # The sibling rule in conformance/siblings.py reads this first.
+      OPENDDIL_REPOS: ${{ github.workspace }}/.siblings
+    steps:
+      - uses: actions/checkout@v4
+
+      # openddil-helm master as of 2026-11-10.
+      - name: Check out the chart
+        uses: actions/checkout@v4
+        with:
+          repository: edgy-solutions/openddil-helm
+          ref: 8bbcb9a2fe7a80494c248d4e208511c839ccfdb5
+          path: .siblings/openddil-helm
+
+      # openddil-demo master as of 2026-11-10.
+      - name: Check out the egress service
+        uses: actions/checkout@v4
+        with:
+          repository: edgy-solutions/openddil-demo
+          ref: 59b5bf78544ab763371516b2bdb79acb3c9a77b5
+          path: .siblings/openddil-demo
+
+      # openddil-contracts main as of 2026-11-10. Only proto/ comes with the checkout:
+      # the generated python is gitignored there, so a later step generates it.
+      - name: Check out the contracts
+        uses: actions/checkout@v4
+        with:
+          repository: edgy-solutions/openddil-contracts
+          ref: aca24eb0a4625d02769e4597c64eac41d86a9e22
+          path: .siblings/openddil-contracts
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.14.3
+
+      - name: Install
+        run: pip install pytest pyyaml jsonschema protobuf asyncpg confluent-kafka grpcio-tools
+
+      - name: Overlay checkers and the manifest parity test
+        run: python -m pytest conformance/overlay/tests tests/test_overlay_manifest_parity.py -q
+
+      - name: Egress twin, with no skips
+        run: |
+          set -o pipefail
+          python -m pytest conformance/egress-twin -q -rs | tee twin.out
+          summary="$(tail -n 1 twin.out)"
+          echo "$summary"
+          if echo "$summary" | grep -Eq '[0-9]+ (skipped|failed|error)'; then
+            echo "::error::the twin skipped, failed or errored: $summary" >&2
+            exit 1
+          fi
+          passed="$(echo "$summary" | sed -n 's/^\([0-9]*\) passed.*/\1/p')"
+          if [ -z "$passed" ] || [ "$passed" -lt 8 ]; then
+            echo "::error::the twin passed ${passed:-0} tests; the floor is 8, so it checked less than it should" >&2
+            exit 1
+          fi

@@ -7,6 +7,16 @@ of the rendered ConfigMaps and hand it to the egress service's own loaders.
 A checkout-free run still gets the shape tests. The render and loader tests skip
 when `helm` or the sibling checkouts are unavailable. Set OPENDDIL_REPOS to the
 directory holding them when this bundle is checked out somewhere else.
+
+The test reads the overlay it checks from two environment variables:
+
+  OVERLAY_ROOT    the overlay's root directory. Default: this repository.
+  OVERLAY_VALUES  a colon-separated values chain, relative to the root, in helm's -f order.
+                  Default: k8s/tier-node-values.yaml:k8s/egress-values.yaml
+
+The kinds, routes, assembler, intake and forwarder names it expects come from the merged
+chain, and the nations from OVERLAY_ROOT/dimensions.yaml when that file exists. The
+workload list is the chart's.
 """
 
 from __future__ import annotations
@@ -22,25 +32,20 @@ from urllib.parse import urlsplit
 import pytest
 import yaml
 
-BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
-TIER_VALUES = BUNDLE_ROOT / "k8s" / "tier-node-values.yaml"
-VALUES = BUNDLE_ROOT / "k8s" / "egress-values.yaml"
-SAMPLE_NATIONS = {"ATL", "BDR", "SYL"}
+CONFORMANCE = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(CONFORMANCE))
+sys.path.insert(0, str(CONFORMANCE / "overlay"))
+from common import deep_merge  # noqa: E402
+from siblings import BUNDLE_ROOT, sibling  # noqa: E402
+
+OVERLAY_ROOT = pathlib.Path(os.environ.get("OVERLAY_ROOT") or BUNDLE_ROOT)
+OVERLAY_VALUES = (os.environ.get("OVERLAY_VALUES") or "k8s/tier-node-values.yaml:k8s/egress-values.yaml").split(":")
+VALUES_CHAIN = [OVERLAY_ROOT / rel for rel in OVERLAY_VALUES]
+DEFAULT_NATIONS = {"ATL", "BDR", "SYL"}
 EGRESS_WORKLOADS = ["egress-gate-c2", "egress-assembler", "egress-intake", "egress-forwarder", "egress-stub-sink"]
 
-
-def _sibling(*parts: str) -> pathlib.Path:
-    roots = [BUNDLE_ROOT.parent / "openddil", BUNDLE_ROOT.parent]
-    if os.environ.get("OPENDDIL_REPOS"):
-        roots.insert(0, pathlib.Path(os.environ["OPENDDIL_REPOS"]))
-    for root in roots:
-        if root.joinpath(*parts).exists():
-            return root.joinpath(*parts)
-    return roots[0].joinpath(*parts)
-
-
-CHART = _sibling("openddil-helm", "openddil-demo")
-EGRESS_SRC = _sibling("openddil-demo", "egress")
+CHART = sibling("openddil-helm", "openddil-demo")
+EGRESS_SRC = sibling("openddil-demo", "egress")
 
 needs_render = pytest.mark.skipif(
     shutil.which("helm") is None or not CHART.is_dir(),
@@ -52,15 +57,29 @@ needs_service = pytest.mark.skipif(
 )
 
 
+def _nations() -> set[str]:
+    path = OVERLAY_ROOT / "dimensions.yaml"
+    if not path.is_file():
+        return DEFAULT_NATIONS
+    for dim in yaml.safe_load(path.read_text(encoding="utf-8"))["dimensions"]:
+        if dim["name"] == "nation":
+            return set(dim["vocabulary"])
+    raise AssertionError("dimensions.yaml declares no nation dimension")
+
+
 @pytest.fixture(scope="module")
 def values():
-    return yaml.safe_load(VALUES.read_text(encoding="utf-8"))
+    merged: dict = {}
+    for path in VALUES_CHAIN:
+        merged = deep_merge(merged, yaml.safe_load(path.read_text(encoding="utf-8")) or {})
+    return merged
 
 
 @pytest.fixture(scope="module")
 def rendered():
     proc = subprocess.run(
-        ["helm", "template", "openddil", str(CHART), "-n", "openddil", "-f", str(TIER_VALUES), "-f", str(VALUES)],
+        ["helm", "template", "openddil", str(CHART), "-n", "openddil",
+         *[arg for path in VALUES_CHAIN for arg in ("-f", str(path))]],
         capture_output=True, text=True, timeout=120,
     )
     assert proc.returncode == 0, f"helm template failed:\n{proc.stderr[:2000]}"
@@ -98,9 +117,10 @@ def _urls(node):
             yield from _urls(value)
 
 
-def test_nations_are_the_sample_nations(values):
+def test_nations_are_the_declared_nations(values):
+    nations = _nations()
     for name, entry in values["releasability"]["destinations"]["entries"].items():
-        assert set(entry["nations"]) <= SAMPLE_NATIONS, name
+        assert set(entry["nations"]) <= nations, name
 
 
 def test_every_host_is_reserved_for_examples(values):
@@ -140,13 +160,14 @@ def test_every_egress_workload_renders(rendered):
 
 
 @needs_service
-def test_the_rendered_config_loads_in_the_service(rendered, egress_modules, tmp_path):
+def test_the_rendered_config_loads_in_the_service(rendered, values, egress_modules, tmp_path):
     kinds_dir = tmp_path / "kinds"
     kinds_dir.mkdir()
     for key, body in _config_map(rendered, "egress-kinds").items():
         (kinds_dir / key).write_text(body, encoding="utf-8")
     declarations = egress_modules["kinds"].load_declarations(kinds_dir)
-    assert set(declarations) == {"FaultEvent", "RepairOrder"}
+    egress = values["egress"]
+    assert set(declarations) == set(egress["kinds"])
 
     def written(name: str, suffix: str, key: str = "config.json") -> pathlib.Path:
         path = tmp_path / name
@@ -154,25 +175,28 @@ def test_the_rendered_config_loads_in_the_service(rendered, egress_modules, tmp_
         return path
 
     routes = egress_modules["routes"].load_routes(written("routes.json", "egress-routes", "routes.json"), declarations)
-    assert {"depot-faults", "repair-orders"} <= {r.name for r in routes}
+    assert {r["name"] for r in egress["routes"]} <= {r.name for r in routes}
 
+    assemblable = {k for k, d in declarations.items() if d.owning_tier and d.episode}
     assembled = egress_modules["assembler"].load_assembler_config(
-        written("assembler.json", "egress-assembler-config"), {"FaultEvent"})
-    assert [e.name for e in assembled] == ["sample-faults"]
+        written("assembler.json", "egress-assembler-config"), assemblable)
+    assert [e.name for e in assembled] == [e["name"] for e in egress["assembler"]["config"]]
 
     taken_in = egress_modules["intake"].load_intake_config(written("intake.json", "egress-intake-config"), declarations)
-    assert [e.name for e in taken_in] == ["sample-repair-orders"]
+    assert [e.name for e in taken_in] == [e["name"] for e in egress["intake"]["config"]]
 
     forwarded = egress_modules["forwarder"].load_forward_config(written("forwarder.json", "egress-forwarder-config"))
-    assert {e.name for e in forwarded} == {"depot-faults", "repair-orders"}
+    assert {e.name for e in forwarded} == {e["name"] for e in egress["forwarder"]["config"]}
 
 
 @needs_service
-def test_the_stand_in_artifact_is_a_valid_repair_order(rendered, egress_modules, tmp_path):
+def test_the_stand_in_artifact_is_a_valid_intake_kind(rendered, values, egress_modules, tmp_path):
     for key, body in _config_map(rendered, "egress-kinds").items():
         (tmp_path / key).write_text(body, encoding="utf-8")
-    validate = egress_modules["kinds"].load_kinds(tmp_path)["RepairOrder"]
+    validators = egress_modules["kinds"].load_kinds(tmp_path)
+    intake_kinds = {e["kind"] for e in values["egress"]["intake"]["config"]}
+    assert intake_kinds, "expected the intake to name a kind"
     artifacts = json.loads(_config_map(rendered, "egress-stub-artifacts")["artifacts.json"])
     assert artifacts, "expected the stand-in to serve an artifact"
     for artifact in artifacts:
-        assert validate(artifact) is None, artifact
+        assert any(validators[kind](artifact) is None for kind in intake_kinds), artifact
