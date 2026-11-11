@@ -1,0 +1,11 @@
+{
+  "kind": "cm_discrepancy",
+  "picture": {
+    "event_id": "sample-event-1",
+    "label": {"originator_nation": "ATL"},
+    "owning_tier": "edge-north",
+    "asset_id": "sample-asset-1",
+    "component": "sample-component",
+    "fault_code": "SAMPLE-001"
+  }
+}

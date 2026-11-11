@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FaultEvent",
+  "type": "object",
+  "x-openddil": {
+    "key": "/picture/event_id",
+    "label": "/picture/label",
+    "owning_tier": "/picture/owning_tier",
+    "trigger": "/kind",
+    "episode": {
+      "asset": "/picture/asset_id",
+      "component": "/picture/component",
+      "fault_code": "/picture/fault_code"
+    }
+  },
+  "required": [
+    "kind",
+    "picture"
+  ],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "cm_discrepancy",
+        "lifecycle_transition"
+      ]
+    },
+    "picture": {
+      "type": "object",
+      "properties": {
+        "event_id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "object"
+        },
+        "owning_tier": {
+          "type": "string"
+        },
+        "asset_id": {
+          "type": "string"
+        },
+        "component": {
+          "type": "string"
+        },
+        "fault_code": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+# The PEP request body for POST /declarations/site. Authored fiction.
+kind: site
+scope:
+  kind: edge
+  id: edge-north
+  records: [entity]
+labels:
+  originator_nation: ATL
+  releasable_to: []
+reason: Sample site declaration for the sample deployment's north edge.

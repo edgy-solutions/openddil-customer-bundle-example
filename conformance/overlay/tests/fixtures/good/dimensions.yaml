@@ -1,0 +1,9 @@
+# init-overlay format, pending an ADR-0055 file ruling. Authored fiction: the
+# sample deployment's invented nations, the same set the sample values use.
+policy_id: sample-policy-1
+dimensions:
+  - name: nation
+    type: permissive_set
+    vocabulary: [ATL, BDR, SYL]
+    owner: sample-releasability-owner
+    author_value: originator_nation

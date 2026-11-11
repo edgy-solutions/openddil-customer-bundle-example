@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RepairOrder",
+  "type": "object",
+  "x-openddil": {
+    "key": "/order_id",
+    "label": "/label",
+    "owning_tier": "/owning_tier"
+  },
+  "required": [
+    "order_id",
+    "label",
+    "owning_tier"
+  ],
+  "properties": {
+    "order_id": {
+      "type": "string"
+    },
+    "label": {
+      "type": "object"
+    },
+    "owning_tier": {
+      "type": "string"
+    },
+    "answers_event": {
+      "type": "string"
+    },
+    "approvals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "subject": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
