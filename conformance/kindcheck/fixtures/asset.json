@@ -1,0 +1,12 @@
+{
+  "readiness": {
+    "operational_status": "DEGRADED",
+    "reporting_status": "REPORTING"
+  },
+  "readiness_observed_at": "2026-11-07T11:59:00Z",
+  "rollup": {
+    "overall_severity": "WARNING"
+  },
+  "rollup_observed_at": "2026-11-07T11:58:00Z",
+  "factors": []
+}

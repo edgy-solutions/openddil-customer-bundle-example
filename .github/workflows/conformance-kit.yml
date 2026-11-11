@@ -79,6 +79,20 @@ jobs:
       - name: Install
         run: pip install pytest pyyaml jsonschema protobuf asyncpg confluent-kafka grpcio-tools
 
+      # gen/ is gitignored in openddil-contracts, so the checkout supplies only proto/.
+      # Generate after the install, pinned to the installed protobuf runtime, and prove one
+      # module imports before kindcheck needs it (the order openddil-tactical-agents'
+      # tests.yml follows).
+      - name: Generate the contracts' protobuf bindings
+        run: |
+          PB=$(python -c "import google.protobuf as p; print(p.__version__)")
+          pip install "grpcio-tools" "protobuf==$PB"
+          cd .siblings/openddil-contracts
+          mkdir -p gen/python
+          python -m grpc_tools.protoc --proto_path=proto --python_out=gen/python $(find proto -name '*.proto')
+          echo "generated $(find gen/python -name '*_pb2.py' | wc -l) protobuf modules"
+          PYTHONPATH=gen/python python -c "from openddil.configuration.v1 import as_maintained_pb2"
+
       - name: Overlay checkers and the manifest parity test
         run: python -m pytest conformance/overlay/tests tests/test_overlay_manifest_parity.py -q
 
@@ -97,3 +111,18 @@ jobs:
             echo "::error::the twin passed ${passed:-0} tests; the floor is 8, so it checked less than it should" >&2
             exit 1
           fi
+
+      - name: kindcheck on the public fixtures
+        run: |
+          set -o pipefail
+          F=conformance/kindcheck/fixtures
+          python conformance/kindcheck/kindcheck.py \
+            --assembler-config $F/assembler-config.json --schemas $F/kind-schemas \
+            --cm-state $F/cm-state.json --asset $F/asset.json \
+            --now 2026-11-07T12:00:00Z | tee kindcheck.out
+          line="$(tail -n 1 kindcheck.out)"
+          if [ "$line" != "kindcheck: checked=1 pass=1 fail=0 unchecked=0" ]; then
+            echo "::error::kindcheck summary was: $line" >&2
+            exit 1
+          fi
+          python -m pytest conformance/kindcheck -q

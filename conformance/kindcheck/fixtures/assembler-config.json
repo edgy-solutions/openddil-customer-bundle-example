@@ -1,0 +1,8 @@
+[
+  {
+    "name": "sample-faults",
+    "kind": "FaultEvent",
+    "trigger_topic": "asset-cm-state",
+    "output_topic": "egress-depot-faults"
+  }
+]
