@@ -99,6 +99,15 @@ py -3 openddil/openddil-customer-bundle-example/tests/integration/run_all.py
 `openddil-customer-bundle-<customer>/README.md`. Multiple overlays
 layer via additional `-f` flags on the same `docker compose` command.
 
+## Start a private overlay
+
+    bash tools/init-overlay.sh [--policy-id ID] [--name NAME] ../my-overlay
+
+writes a skeleton repo (fictional content, a `checks.sh` that runs this repository's checkers on it,
+a CI workflow, and the git hooks in private mode) and makes one commit. Replace the fictional content with
+your own and keep it in that private repo. `tools/init-overlay/template/README.md` says what stays private
+and what may cross to public as shape. `tests/test_init_overlay.py` makes one in a temp dir and runs the ten checks on it.
+
 ## Lifecycle — forking for a real customer
 
 1. Copy this whole directory to `openddil-customer-bundle-<customer>/`.
