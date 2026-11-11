@@ -1,0 +1,56 @@
+#!/bin/sh
+# openddil pre-push: re-check every outgoing commit; private mode also checks the remote.
+. "$(dirname "$0")/lib.sh"
+hk_init pre-push
+
+if [ "$HK_MODE" = private ]; then
+  af=$(git rev-parse --git-path info/allowed-remotes) || exit 1
+  allowed=0
+  if [ -f "$af" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      line=$(printf '%s' "$line" | tr -d '\r')
+      case "$line" in ''|'#'*) continue ;; esac
+      if [ "$line" = "$2" ]; then allowed=1; break; fi
+    done < "$af"
+  fi
+  if [ "$allowed" -ne 1 ]; then
+    hk_err "pre-push: remote-not-allowed: this remote is not listed in $af (a missing or empty file refuses every push)."
+    hk_err "To fix: list the intended private remote in that file, one URL per line."
+    exit 1
+  fi
+fi
+
+refs=$(cat)
+all=
+while read -r lref lsha rref rsha; do
+  [ -n "$lsha" ] || continue
+  case "$lsha" in *[!0]*) ;; *) continue ;; esac
+  case "$rsha" in
+    *[!0]*)
+      if git cat-file -e "$rsha^{commit}" 2>/dev/null; then
+        revs=$(git rev-list "$rsha..$lsha")
+      else
+        revs=$(git rev-list "$lsha" --not --remotes)
+      fi
+      ;;
+    *) revs=$(git rev-list "$lsha" --not --remotes) ;;
+  esac
+  for c in $revs; do
+    short=$(git rev-parse --short "$c")
+    pfx="commit $short "
+    o1=$(git -c core.quotepath=off diff-tree -p -U0 --root --no-commit-id -r --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ "$c" | hk_scan_diff "$pfx")
+    o2=$(git -c core.quotepath=off diff-tree -r --name-only --root --no-commit-id --diff-filter=ACMR "$c" | hk_scan_text path "$pfx")
+    o3=$(git log -1 --format=%B "$c" | hk_scan_text msg "$pfx")
+    for o in "$o1" "$o2" "$o3"; do
+      if [ -n "$o" ]; then
+        all="$all$o
+"
+      fi
+    done
+  done
+done <<EOT
+$refs
+EOT
+all=$(printf '%s' "$all" | sed '/^$/d')
+hk_finish "$all" "To fix: edit the offending commit (git commit --amend or an interactive rebase) and push again."
+exit 0

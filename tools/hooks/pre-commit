@@ -1,0 +1,15 @@
+#!/bin/sh
+# openddil pre-commit: refuse staged added lines holding a Secret manifest, a private key,
+# a kubeconfig key, or (public mode) a private term; refuse staged paths holding a term.
+. "$(dirname "$0")/lib.sh"
+hk_init pre-commit
+
+out=$(hk_gitdiff --cached --diff-filter=ACMR | hk_scan_diff "")
+pout=$(git -c core.quotepath=off diff --cached --name-only --diff-filter=ACMR | hk_scan_text path "")
+if [ -n "$pout" ]; then
+  out="$out
+$pout"
+fi
+out=$(printf '%s\n' "$out" | sed '/^$/d')
+hk_finish "$out" "To fix: unstage the file with git restore --staged <path>, edit it, and commit again."
+exit 0

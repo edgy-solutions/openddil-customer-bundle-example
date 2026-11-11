@@ -1,0 +1,8 @@
+#!/bin/sh
+# openddil commit-msg: public mode refuses a message line holding a private term.
+. "$(dirname "$0")/lib.sh"
+hk_init commit-msg
+
+out=$(hk_scan_text msg "" < "$1")
+hk_finish "$out" "To fix: edit the message and commit again (or git commit --amend)."
+exit 0
