@@ -1,0 +1,178 @@
+# =============================================================================
+# Sample deployment manifest: egress kinds, destinations and routes
+# =============================================================================
+# PROVENANCE: authored fiction. Authored for the sample deployment; definitive
+# for it. Fictional destinations, fictional kinds, fictional nations. It
+# demonstrates the shape an overlay gives the egress seam and does NOT attest
+# that any real-world destination, schema or route was validated. See
+# overlay-manifest.yaml class `values`.
+#
+# WHY THIS IS A TEST FIXTURE, NOT DOCUMENTATION:
+#
+# The example's conformance/egress-twin/test_egress_overlay.py renders the chart with these values and loads
+# every section through the egress service's own config loaders, so a shape the
+# service would refuse fails here. It renders and loads. It does not deliver:
+# every host below is under .invalid, so a live install reaches nothing until a
+# fork replaces them. The stand-in destination stays available for that fork.
+#
+# It layers on the tier-node values, which it does not change:
+#   helm template <repos>/openddil-helm/openddil-demo \
+#     -f values/tier-node.yaml -f values/egress.yaml
+# =============================================================================
+
+# Names this deployment in the documents generated from it. The chart does not
+# read it, so no render changes. Without `attribution`, each document carries the
+# default attribution line; `attribution: false` drops the line.
+system:
+  name: "Sample Fleet System"
+
+releasability:
+  enabled: true
+  destinations:
+    version: "sample-1"
+    entries:
+      # The chart's own route goes here unless a deployment retargets it.
+      "system:c2-stand-in-atl":
+        display_name: "C2 stand-in (Atlantis)"
+        nations: [ATL]
+        accepts: [RepairOrder]
+        asserted_by: "sample-registry"
+        asserted_on: "2026-01-01"
+      "system:depot-ledger":
+        display_name: "Depot ledger"
+        nations: [ATL, BDR]
+        accepts: [FaultEvent]
+        asserted_by: "sample-registry"
+        asserted_on: "2026-01-01"
+
+egress:
+  hubTopics:
+    - "egress-depot-faults|-p 8 -r 1 -c cleanup.policy=compact"
+    - "egress-depot-sink|-p 8 -r 1 -c cleanup.policy=compact"
+    - "egress-repair-orders|-p 8 -r 1 -c cleanup.policy=compact"
+    - "egress-c2-repair-sink|-p 8 -r 1 -c cleanup.policy=compact"
+
+  kinds:
+    # Assembled here from a condition-monitoring episode, sent to the ledger.
+    FaultEvent:
+      $schema: "https://json-schema.org/draft/2020-12/schema"
+      title: FaultEvent
+      type: object
+      x-openddil:
+        key: /picture/event_id
+        label: /picture/label
+        owning_tier: /picture/owning_tier
+        trigger: /kind
+        episode:
+          asset: /picture/asset_id
+          component: /picture/component
+          fault_code: /picture/fault_code
+      required: [kind, picture]
+      properties:
+        kind:
+          type: string
+          enum: [cm_discrepancy, lifecycle_transition]
+        picture:
+          type: object
+          properties:
+            event_id: {type: string}
+            label: {type: object}
+            owning_tier: {type: string}
+            asset_id: {type: string}
+            component: {type: string}
+            fault_code: {type: string}
+    # The ledger's answer to a FaultEvent, taken in by the intake.
+    RepairOrder:
+      $schema: "https://json-schema.org/draft/2020-12/schema"
+      title: RepairOrder
+      type: object
+      x-openddil:
+        key: /order_id
+        label: /label
+        owning_tier: /owning_tier
+      required: [order_id, label, owning_tier]
+      properties:
+        order_id: {type: string}
+        label: {type: object}
+        owning_tier: {type: string}
+        answers_event: {type: string}
+        approvals:
+          type: array
+          items:
+            type: object
+            properties:
+              subject: {type: string}
+
+  routes:
+    - name: depot-faults
+      source_topic: egress-depot-faults
+      destination: "system:depot-ledger"
+      sink_topic: egress-depot-sink
+      kind: FaultEvent
+    - name: repair-orders
+      source_topic: egress-repair-orders
+      destination: "system:c2-stand-in-atl"
+      sink_topic: egress-c2-repair-sink
+      kind: RepairOrder
+
+  assembler:
+    enabled: true
+    config:
+      - name: sample-faults
+        kind: FaultEvent
+        trigger_topic: asset-cm-state
+        output_topic: egress-depot-faults
+
+  intake:
+    enabled: true
+    config:
+      - name: sample-repair-orders
+        source_destination: "system:depot-ledger"
+        kind: RepairOrder
+        poll:
+          url: https://depot-ledger.example.invalid/artifacts
+          interval_s: 30
+          items_pointer: /items
+        answers:
+          topic: egress-depot-faults
+          kind: FaultEvent
+          ref_pointer: /answers_event
+          id_pointer: /picture/event_id
+        approvers:
+          array_pointer: /approvals
+          subject_field: subject
+        onward_topic: egress-repair-orders
+
+  forwarder:
+    enabled: true
+    tokenSecret: sample-forwarder-token
+    config:
+      - name: depot-faults
+        sink_topic: egress-depot-sink
+        url: https://depot-ledger.example.invalid/records
+        kind: FaultEvent
+        auth:
+          token_url: https://depot-ledger.example.invalid/oauth/token
+          client_id: sample-forwarder
+          client_secret_file: /etc/openddil/egress-credentials/client-secret
+      - name: repair-orders
+        sink_topic: egress-c2-repair-sink
+        url: https://c2-stand-in.example.invalid/orders
+        kind: RepairOrder
+        token_file: /etc/openddil/egress-forwarder-token/token
+
+  # Named here, created out of band. None of these exist in this repository.
+  credentials:
+    existingSecret: sample-egress-credentials
+  trust:
+    caConfigMap: sample-egress-ca
+
+  stubSink:
+    enabled: true
+    artifacts:
+      - order_id: sample-order-1
+        label: {classification: UNCLASSIFIED}
+        owning_tier: hq
+        answers_event: sample-event-1
+        approvals:
+          - subject: sample-approver

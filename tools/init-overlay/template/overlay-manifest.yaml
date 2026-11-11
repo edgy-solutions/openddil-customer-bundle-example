@@ -1,0 +1,53 @@
+# Overlay manifest for this private overlay, made by init-overlay.
+# The rule is the public twin's: every artifact class this overlay carries has a sanitized
+# fictional twin in openddil-customer-bundle-example. Structure mirrors; content stays here.
+version: 1
+
+classes:
+  - id: kinds
+    purpose: Egress kind schemas, one per kind, with one valid fixture each.
+    path: kinds/
+    required: true
+    status: present
+
+  - id: dimensions
+    purpose: The label dimensions and their vocabularies (init-overlay format, pending an ADR-0055 file ruling).
+    path: dimensions.yaml
+    required: true
+    status: present
+
+  - id: declarations
+    purpose: Site, rule and exemption declarations, one PEP request body per file.
+    path: declarations/
+    required: true
+    status: present
+
+  - id: enumeration
+    purpose: The scenario enumeration overlay the DIS simulator reads.
+    path: enumeration/
+    required: true
+    status: present
+
+  - id: algorithms
+    purpose: Algorithm units and their tests, run against the openddil-tactical-agents harness.
+    path: algorithms/
+    required: false
+    status: present
+
+  - id: values
+    purpose: The helm values chain, in the order chain.txt lists.
+    path: values/
+    required: true
+    status: present
+
+  - id: contract-b
+    purpose: A Contract B replay file for the validator.
+    path: contract-b/
+    required: true
+    status: present
+
+  - id: ci
+    purpose: The workflow that runs checks.sh against pinned sibling checkouts.
+    path: .github/workflows/
+    required: true
+    status: present

@@ -1,0 +1,10 @@
+# init-overlay format, pending an ADR-0055 file ruling. This is not a contract.
+# Replace the sample nations with your program's own set. The set here must equal the
+# nations the contract-b replay is run with; checks.sh feeds it to the validator.
+policy_id: @POLICY_ID@
+dimensions:
+  - name: nation
+    type: permissive_set
+    vocabulary: [ATL, BDR, SYL]
+    owner: releasability-officer
+    author_value: originator_nation

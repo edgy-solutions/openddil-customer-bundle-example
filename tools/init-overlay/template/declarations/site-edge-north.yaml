@@ -1,0 +1,11 @@
+# The PEP request body for POST /declarations/site. The owner and the date are set by the
+# PEP from the session, so they are not written here. Replace the edge and labels.
+kind: site
+scope:
+  kind: edge
+  id: edge-north
+  records: [entity]
+labels:
+  originator_nation: ATL
+  releasable_to: []
+reason: Placeholder site declaration for the first edge; replace before use.

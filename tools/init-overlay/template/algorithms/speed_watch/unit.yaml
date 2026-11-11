@@ -1,0 +1,33 @@
+# A template unit. Copy this directory, rename it, and change the marked lines.
+apiVersion: openddil.io/algorithm/v1
+unit: speed_watch                  # CHANGE: the unit's name
+version: "0.1.0"
+runtime: stream-parallel           # the only execution class the runner accepts today
+entrypoint: speed_watch.py:SpeedWatch   # CHANGE: file:class
+key: asset_id
+composition: propagating           # propagating | terminal. A terminal unit may not emit upward (rule 3)
+inputs:
+  topic: raw-sensor-stream
+  roles:                           # rule 1: name the roles you read; a unit never sees the raw message
+    - {role: sample_time_s, required: true}
+    - {role: speed_mps, required: false}
+params:                            # every tunable constant lives here, with its default and unit
+  speed_limit_mps:  {type: number,  default: 20.0, minimum: 0, unit: m/s}
+  min_samples:      {type: integer, default: 3,    minimum: 1}
+state:
+  table: speed_watch_state         # CHANGE: one table per unit
+  partitions: 1
+  record_namespace: speed_watch.unit._SpeedWatchRecord
+  fields:
+    over_limit_count: {type: integer, default: 0}
+outputs:                           # rule 2: only declared kinds; provenance and labels are the runner's
+  - kind: anomaly
+    topic: tactical-events
+    direction: local               # local | upward
+    producer_id: speed-watch-example
+    source_protocol: openddil.speed_watch.v1
+    labels: copy-source            # the only accepted value today: labels follow the source record
+    event_type: openddil.anomaly.example.speed_watch.v1
+    severity: warning
+resources: {memory_mi: 8, cpu_m: 10}
+dependencies: []                   # rule 4: must be empty; nothing is fetched at load

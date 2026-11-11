@@ -1,0 +1,32 @@
+{
+  "asset_id": "ATL_NORTH_SENTRY1_R",
+  "edge_id": "edge-north",
+  "originator_nation": "ATL",
+  "releasable_to": [
+    "ATL"
+  ],
+  "lifecycle": 2,
+  "as_of_ns": 1793332400000000000,
+  "installed": [
+    {
+      "slot_id": "cooling_fan",
+      "ci_id": "",
+      "installed_at_ns": 1700000000000000000
+    }
+  ],
+  "manual_discrepancies": [
+    {
+      "component": "cooling_fan",
+      "fault_code": "SAMPLE-FAN-001",
+      "detected_at_ns": 1793332388000000000,
+      "sources": [
+        {
+          "source": "manual",
+          "reported_by": "sample-operator",
+          "event_id": "sample-report-1",
+          "reported_at_ns": 1793332388000000000
+        }
+      ]
+    }
+  ]
+}

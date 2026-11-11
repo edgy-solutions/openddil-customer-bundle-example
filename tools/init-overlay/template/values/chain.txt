@@ -1,0 +1,5 @@
+# The ordered -f list for helm, one file per line. The overlay's own last file comes last.
+# Lists replace, maps deep-merge, and a later null does not delete: swap a stale file in
+# place in this list instead of nulling it from a later one.
+values/tier-node.yaml
+values/egress.yaml

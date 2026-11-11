@@ -1,0 +1,7 @@
+{
+  "order_id": "sample-order-1",
+  "label": {"classification": "UNCLASSIFIED"},
+  "owning_tier": "hq",
+  "answers_event": "sample-event-1",
+  "approvals": [{"subject": "sample-approver"}]
+}
