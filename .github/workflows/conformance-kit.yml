@@ -11,7 +11,8 @@ name: Conformance kit
 # The sibling checkouts are pinned to commit SHAs, not branches, so a change in a
 # sibling cannot turn this job red or green on its own. Each pin is the head of the
 # repository's default branch (master for helm and demo, main for contracts) as of
-# 2026-11-10. Move a pin on purpose, in a commit that says why.
+# 2026-11-10, except contracts and tactical-agents, which follow tools/init-overlay/pins.env.
+# Move a pin on purpose, in a commit that says why.
 
 on:
   push:
@@ -21,6 +22,10 @@ on:
       - "k8s/**"
       - "overlay-manifest.yaml"
       - "tests/test_overlay_manifest_parity.py"
+      - "tests/test_init_overlay.py"
+      - "tools/init-overlay.sh"
+      - "tools/init-overlay/**"
+      - "tools/hooks/**"
       - ".github/workflows/conformance-kit.yml"
   pull_request:
     branches: [ "master" ]
@@ -29,6 +34,10 @@ on:
       - "k8s/**"
       - "overlay-manifest.yaml"
       - "tests/test_overlay_manifest_parity.py"
+      - "tests/test_init_overlay.py"
+      - "tools/init-overlay.sh"
+      - "tools/init-overlay/**"
+      - "tools/hooks/**"
       - ".github/workflows/conformance-kit.yml"
 
 permissions:
@@ -59,14 +68,26 @@ jobs:
           ref: 59b5bf78544ab763371516b2bdb79acb3c9a77b5
           path: .siblings/openddil-demo
 
-      # openddil-contracts main as of 2026-11-10. Only proto/ comes with the checkout:
-      # the generated python is gitignored there, so a later step generates it.
+      # openddil-contracts at CONTRACTS_REF in tools/init-overlay/pins.env: the units-table head,
+      # which carries the shared unit table the harness imports. Move to the default branch once
+      # the open PRs merge. Only proto/ comes with the checkout: the generated python is
+      # gitignored there, so a later step generates it.
       - name: Check out the contracts
         uses: actions/checkout@v4
         with:
           repository: edgy-solutions/openddil-contracts
-          ref: aca24eb0a4625d02769e4597c64eac41d86a9e22
+          ref: e63f9007aacbe952282b4e168038fd1c7e880e9c
           path: .siblings/openddil-contracts
+
+      # openddil-tactical-agents at TA_REF in tools/init-overlay/pins.env: origin/units-celsius.
+      # Move to the default branch once the open PRs merge. The overlay's algorithm checks
+      # import its edge/ harness.
+      - name: Check out the algorithm harness
+        uses: actions/checkout@v4
+        with:
+          repository: edgy-solutions/openddil-tactical-agents
+          ref: 30da7631dae978899a4ccaac70dafb21685cd8ac
+          path: .siblings/openddil-tactical-agents
 
       - uses: actions/setup-python@v5
         with:
@@ -77,7 +98,7 @@ jobs:
           version: v3.14.3
 
       - name: Install
-        run: pip install pytest pyyaml jsonschema protobuf asyncpg confluent-kafka grpcio-tools
+        run: pip install pytest pyyaml jsonschema protobuf asyncpg confluent-kafka grpcio-tools pint==0.24.4
 
       # gen/ is gitignored in openddil-contracts, so the checkout supplies only proto/.
       # Generate after the install, pinned to the installed protobuf runtime, and prove one
@@ -126,3 +147,18 @@ jobs:
             exit 1
           fi
           python -m pytest conformance/kindcheck -q
+
+      # The skeleton init-overlay writes must pass its own ten checks as it comes. The test
+      # makes a repo in a temp dir, runs checks.sh in it, and asserts the summary line. It
+      # needs helm, the demo, the contracts bindings and the harness, all checked out above.
+      - name: init-overlay skeleton passes its checks
+        run: |
+          set -o pipefail
+          git config --global user.name "ci"
+          git config --global user.email "ci@example.invalid"
+          python -m pytest tests/test_init_overlay.py -q -rs -p no:cacheprovider | tee init.out
+          summary="$(tail -n 1 init.out)"
+          if echo "$summary" | grep -Eq '[0-9]+ (skipped|failed|error)' || ! echo "$summary" | grep -Eq '^3 passed'; then
+            echo "::error::init-overlay test summary was: $summary" >&2
+            exit 1
+          fi
