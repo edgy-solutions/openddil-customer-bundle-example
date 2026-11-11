@@ -105,6 +105,43 @@ def test_the_checks_can_fail(inited, tmp_path):
     assert "overlay-checks: dimensions FAIL" in checks.stdout
 
 
+def _copy_tools(dest: pathlib.Path) -> pathlib.Path:
+    """The kit's shape: tools/ copied out of the clone, so there is no git to read a SHA from."""
+    for rel in ("init-overlay.sh", "init-overlay", "hooks"):
+        src = REPO / "tools" / rel
+        if src.is_dir():
+            shutil.copytree(src, dest / "tools" / rel, ignore=shutil.ignore_patterns("__pycache__"))
+        else:
+            (dest / "tools").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest / "tools" / rel)
+    return dest / "tools" / "init-overlay.sh"
+
+
+def test_a_copy_outside_a_clone_pins_its_bundle_ref(tmp_path):
+    env = _env()
+    init = _copy_tools(tmp_path / "kit")
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    (tmp_path / "kit" / "tools" / "init-overlay" / "bundle.ref").write_text(sha + "\n")
+    target = tmp_path / "overlay"
+    result = subprocess.run([_bash(), init.as_posix(), target.as_posix()], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr[-1500:]
+    workflow = (target / ".github" / "workflows" / "conformance.yml").read_text()
+    assert sha in workflow
+    assert "0123456" in _git(target, "log", "-1", "--format=%s")
+
+
+@pytest.mark.parametrize("ref", [None, "not-a-sha\n"])
+def test_a_copy_outside_a_clone_refuses_without_a_valid_bundle_ref(tmp_path, ref):
+    env = _env()
+    init = _copy_tools(tmp_path / "kit")
+    if ref is not None:
+        (tmp_path / "kit" / "tools" / "init-overlay" / "bundle.ref").write_text(ref)
+    target = tmp_path / "overlay"
+    result = subprocess.run([_bash(), init.as_posix(), target.as_posix()], env=env, capture_output=True, text=True)
+    assert result.returncode == 2
+    assert not target.exists()
+
+
 def test_init_refuses_a_non_empty_target(tmp_path):
     env = _env()
     target = tmp_path / "taken"
