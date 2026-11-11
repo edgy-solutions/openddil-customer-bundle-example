@@ -79,14 +79,14 @@ jobs:
           ref: e63f9007aacbe952282b4e168038fd1c7e880e9c
           path: .siblings/openddil-contracts
 
-      # openddil-tactical-agents at TA_REF in tools/init-overlay/pins.env: origin/units-celsius.
+      # openddil-tactical-agents at TA_REF in tools/init-overlay/pins.env: the algorithms-ports head.
       # Move to the default branch once the open PRs merge. The overlay's algorithm checks
       # import its edge/ harness.
       - name: Check out the algorithm harness
         uses: actions/checkout@v4
         with:
           repository: edgy-solutions/openddil-tactical-agents
-          ref: 30da7631dae978899a4ccaac70dafb21685cd8ac
+          ref: e74a8d6147f71c2436bbcbc935bfcc6afe5bd306
           path: .siblings/openddil-tactical-agents
 
       - uses: actions/setup-python@v5
