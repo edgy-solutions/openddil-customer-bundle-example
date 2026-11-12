@@ -86,7 +86,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: edgy-solutions/openddil-tactical-agents
-          ref: e74a8d6147f71c2436bbcbc935bfcc6afe5bd306
+          ref: dd52482bf1a6a738145f1f1250661ca29786f44a
           path: .siblings/openddil-tactical-agents
 
       - uses: actions/setup-python@v5
